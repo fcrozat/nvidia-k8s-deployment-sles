@@ -26,6 +26,7 @@ TARGET_USER="${TARGET_USER:-${!user_var}}"
 K8S_DISTRO="${K8S_DISTRO:-${!distro_var}}"
 NEEDS_MIRROR="${NEEDS_MIRROR:-${!mirror_var:-false}}"
 USE_PREBUILT_CONTAINER="${USE_PREBUILT_CONTAINER:-true}"
+USE_PRECOMPILED="${USE_PRECOMPILED:-false}"
 
 if [ -z "$NVIDIA_DRIVER_VERSION" ]; then
     echo "Error: NVIDIA_DRIVER_VERSION environment variable must be set."
@@ -52,7 +53,23 @@ echo "Local Registry found at: $REGISTRY_IP"
 SLES=$(ssh "$TARGET_USER@$TARGET_HOST" 'source /etc/os-release && echo $VERSION_ID')
 echo "Detected SLES version on remote: $SLES"
 
-FINAL_REGISTRY_TAG="${NVIDIA_DRIVER_VERSION}-sles${SLES}"
+# Detect kernel version if using precompiled drivers
+if [ "$USE_PRECOMPILED" == "true" ]; then
+  echo "Detecting kernel version on remote host for precompiled drivers..."
+  KERNEL_VERSION=$(ssh "$TARGET_USER@$TARGET_HOST" 'uname -r')
+  if [ -z "$KERNEL_VERSION" ]; then
+    echo "Error: Failed to detect kernel version. Required for USE_PRECOMPILED=true"
+    exit 1
+  fi
+  echo "Detected kernel version: $KERNEL_VERSION"
+  DRIVER_BRANCH="${NVIDIA_DRIVER_VERSION%%.*}"
+  FINAL_REGISTRY_TAG="${DRIVER_BRANCH}-${KERNEL_VERSION}-sles${SLES}"
+  HELM_DRIVER_VERSION="$DRIVER_BRANCH"
+else
+  FINAL_REGISTRY_TAG="${NVIDIA_DRIVER_VERSION}-sles${SLES}"
+  HELM_DRIVER_VERSION="$NVIDIA_DRIVER_VERSION"
+fi
+
 LOCAL_IMAGE_NAME="${REGISTRY_IP}:5000/nvidia/driver:${FINAL_REGISTRY_TAG}"
 
 # --- Check if image exists in local registry ---
@@ -96,8 +113,14 @@ else
 fi
 
 # --- Patch ClusterPolicy ---
-echo "Patching ClusterPolicy to use version $NVIDIA_DRIVER_VERSION..."
-kubectl patch clusterpolicies.nvidia.com/cluster-policy --type='json' \
-    -p="[{\"op\": \"replace\", \"path\": \"/spec/driver/version\", \"value\":\"$NVIDIA_DRIVER_VERSION\"}]"
+if [ "$USE_PRECOMPILED" == "true" ]; then
+  echo "Patching ClusterPolicy to use precompiled driver version $HELM_DRIVER_VERSION (branch) with usePrecompiled=true..."
+  kubectl patch clusterpolicies.nvidia.com/cluster-policy --type='json' \
+    -p="[{\"op\": \"replace\", \"path\": \"/spec/driver/version\", \"value\":\"$HELM_DRIVER_VERSION\"},{\"op\": \"replace\", \"path\": \"/spec/driver/usePrecompiled\", \"value\":true}]"
+else
+  echo "Patching ClusterPolicy to use version $HELM_DRIVER_VERSION..."
+  kubectl patch clusterpolicies.nvidia.com/cluster-policy --type='json' \
+    -p="[{\"op\": \"replace\", \"path\": \"/spec/driver/version\", \"value\":\"$HELM_DRIVER_VERSION\"}]"
+fi
 
 echo "Upgrade triggered. Monitor pods with: kubectl get pods -n gpu-operator -w"

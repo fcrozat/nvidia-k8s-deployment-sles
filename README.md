@@ -59,6 +59,8 @@ These environment variables can override config.sh values or control script beha
 | `USE_PREBUILT_CONTAINER` | `false` | If `true`, pulls pre-built images from the internal registry (configured in `config.sh`). If `production`, uses the public `registry.suse.com/third-party/nvidia`. |
 | `USE_UPSTREAM_GPU_OPERATOR` | `false` | If `true`, uses the upstream GPU Operator from NVIDIA. If `false` (default), builds and uses a patched version with SUSE-specific modifications. |
 | `KERNEL_MODULE_TYPE` | `auto` | Type of kernel module to use (`auto`, `proprietary`, `open-gpu-kernel-modules`). |
+| `USE_PRECOMPILED` | `false` | If `true`, enables precompiled driver containers in the GPU Operator. The driver version is automatically set to the branch (e.g. `580` instead of `580.126.09`), and when building locally (`USE_PREBUILT_CONTAINER=false`), the container image tag follows the format `<branch>-<kernel-version>-sles<version>` (e.g. `580-5.14.21-150500.55.73-default-sles15.7`). Also switches GPU operator to `precompiled_lib_modules_mount` branch instead of `suse_lib_modules` (unless `GPU_OPERATOR_BRANCH` is set). See [NVIDIA precompiled drivers docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/precompiled-drivers.html). |
+| `GPU_OPERATOR_BRANCH` | _auto-detected_ | Override the GPU operator git branch. If not set, defaults to `precompiled_lib_modules_mount` when `USE_PRECOMPILED=true`, otherwise `suse_lib_modules`. Only used when `USE_UPSTREAM_GPU_OPERATOR=false`. |
 
 ## Usage
 

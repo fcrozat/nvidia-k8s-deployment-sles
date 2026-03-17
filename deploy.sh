@@ -34,6 +34,8 @@ NEEDS_MIRROR="${NEEDS_MIRROR:-${!mirror_var:-false}}"
 USE_PREBUILT_CONTAINER="${USE_PREBUILT_CONTAINER:-false}"
 USE_UPSTREAM_GPU_OPERATOR="${USE_UPSTREAM_GPU_OPERATOR:-false}"
 KERNEL_MODULE_TYPE="${KERNEL_MODULE_TYPE:-auto}"
+USE_PRECOMPILED="${USE_PRECOMPILED:-false}"
+GPU_OPERATOR_BRANCH="${GPU_OPERATOR_BRANCH:-}"  # Optional override for GPU operator branch
 
 # Detect SLES version early for log filename
 echo "Detecting SLES version on remote host..."
@@ -43,6 +45,17 @@ if [ -z "$SLES" ]; then
   SLES=15.7
 fi
 echo "Detected SLES version: $SLES"
+
+# Detect kernel version if using precompiled drivers
+if [ "$USE_PRECOMPILED" == "true" ]; then
+  echo "Detecting kernel version on remote host for precompiled drivers..."
+  KERNEL_VERSION=$(ssh $TARGET_USER@$TARGET_HOST 'uname -r')
+  if [ -z "$KERNEL_VERSION" ]; then
+    echo "Error: Failed to detect kernel version. Required for USE_PRECOMPILED=true"
+    exit 1
+  fi
+  echo "Detected kernel version: $KERNEL_VERSION"
+fi
 
 # Set up logging with OS version in filename
 DEPLOY_LOG="${DEPLOY_LOG:-deploy-sles${SLES}.log}"
@@ -213,7 +226,13 @@ DRIVER_CONTAINER_BRANCH="${DRIVER_CONTAINER_BRANCH:-sles15-refresh}"
 DRIVER_IMAGE_NAME="${DRIVER_IMAGE_NAME:-driver}"
 
 # SLES version was already detected earlier for kubeconfig naming
-FINAL_REGISTRY_TAG="${NVIDIA_DRIVER_VERSION}-sles${SLES}"
+# For precompiled drivers, use branch-kernel-os format; otherwise use version-os format
+if [ "$USE_PRECOMPILED" == "true" ]; then
+  DRIVER_BRANCH="${NVIDIA_DRIVER_VERSION%%.*}"
+  FINAL_REGISTRY_TAG="${DRIVER_BRANCH}-${KERNEL_VERSION}-sles${SLES}"
+else
+  FINAL_REGISTRY_TAG="${NVIDIA_DRIVER_VERSION}-sles${SLES}"
+fi
 
 if [ "$USE_PREBUILT_CONTAINER" != "false" ]; then
     if [ "$USE_PREBUILT_CONTAINER" == "production" ]; then
@@ -252,12 +271,14 @@ echo "Building and pushing container on remote host..."
 if ! ssh $TARGET_USER@$TARGET_HOST \
   NVIDIA_DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" \
   GPU_OPERATOR_VERSION="$GPU_OPERATOR_VERSION" \
+  GPU_OPERATOR_BRANCH="$GPU_OPERATOR_BRANCH" \
   SLES="$SLES" \
   FINAL_REGISTRY_TAG="$FINAL_REGISTRY_TAG" \
   REGISTRY_IP="$REGISTRY_IP" \
   DRIVER_CONTAINER_BRANCH="$DRIVER_CONTAINER_BRANCH" \
   USE_PREBUILT_CONTAINER="$USE_PREBUILT_CONTAINER" \
   USE_UPSTREAM_GPU_OPERATOR="$USE_UPSTREAM_GPU_OPERATOR" \
+  USE_PRECOMPILED="$USE_PRECOMPILED" \
   DRIVER_IMAGE_NAME="$DRIVER_IMAGE_NAME" \
   NEEDS_MIRROR="$NEEDS_MIRROR" \
   INTERNAL_REGISTRY="$INTERNAL_REGISTRY" \
@@ -321,6 +342,9 @@ else
   fi
   cd ~/checkout/nvidia/gpu-driver-container/$BUILD_DIR
 
+  # Set the local build tag (used before pushing to registry)
+  LOCAL_BUILD_TAG="nvidia/nvidia-gpu-driver:$NVIDIA_DRIVER_VERSION"
+
   if [ "$DRIVER_CONTAINER_BRANCH" == "cuda-combined-container" ]; then
     # Build additional images
     echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH -t nvidia/driver-open:$NVIDIA_DRIVER_VERSION-sles$SLES -f Dockerfile.open"
@@ -330,24 +354,61 @@ else
   fi
 
   # Build the driver image
-  echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH -t nvidia/nvidia-gpu-driver:$NVIDIA_DRIVER_VERSION ."
-  podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH"  -t "nvidia/nvidia-gpu-driver:$NVIDIA_DRIVER_VERSION" .
+  if [ "$USE_PRECOMPILED" == "true" ]; then
+    echo "Building precompiled driver image with tag: $LOCAL_BUILD_TAG"
+  fi
+  echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH -t $LOCAL_BUILD_TAG ."
+  podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH"  -t "$LOCAL_BUILD_TAG" .
 
-  # Push the image
-  echo "Pushing image nvidia/nvidia-gpu-driver:$NVIDIA_DRIVER_VERSION to in-cluster registry as $REGISTRY_IP:5000/nvidia/$DRIVER_IMAGE_NAME:$FINAL_REGISTRY_TAG ..."
-  podman push --tls-verify=false "nvidia/nvidia-gpu-driver:$NVIDIA_DRIVER_VERSION" "$REGISTRY_IP:5000/nvidia/$DRIVER_IMAGE_NAME:$FINAL_REGISTRY_TAG"
+  # Push the image with the appropriate tag
+  if [ "$USE_PRECOMPILED" == "true" ]; then
+    echo "Pushing precompiled driver image as $REGISTRY_IP:5000/nvidia/$DRIVER_IMAGE_NAME:$FINAL_REGISTRY_TAG (format: branch-kernel-os)"
+  else
+    echo "Pushing driver image as $REGISTRY_IP:5000/nvidia/$DRIVER_IMAGE_NAME:$FINAL_REGISTRY_TAG"
+  fi
+  podman push --tls-verify=false "$LOCAL_BUILD_TAG" "$REGISTRY_IP:5000/nvidia/$DRIVER_IMAGE_NAME:$FINAL_REGISTRY_TAG"
 fi
 
 if [ "$USE_UPSTREAM_GPU_OPERATOR" != "true" ]; then
   # Clone the gpu-operator container repo
-  BRANCH=suse_lib_modules
+  # Determine which branch to use
+  if [ -n "$GPU_OPERATOR_BRANCH" ]; then
+    # User explicitly specified a branch
+    BRANCH="$GPU_OPERATOR_BRANCH"
+  elif [ "$USE_PRECOMPILED" == "true" ]; then
+    # Use precompiled branch when USE_PRECOMPILED=true
+    BRANCH=precompiled_lib_modules_mount
+  else
+    # Default branch
+    BRANCH=suse_lib_modules
+  fi
+  echo "Using GPU operator branch: $BRANCH"
+
   if [ ! -d "$HOME/checkout/nvidia/gpu-operator" ]; then
     mkdir -p ~/checkout/nvidia
     cd ~/checkout/nvidia
-    git clone -b $BRANCH https://github.com/fcrozat/gpu-operator.git
+    if ! git clone -b $BRANCH https://github.com/fcrozat/gpu-operator.git; then
+      echo "Error: Failed to clone GPU operator repository with branch $BRANCH"
+      echo "The branch may not exist yet. Please specify GPU_OPERATOR_BRANCH or use USE_UPSTREAM_GPU_OPERATOR=true"
+      exit 1
+    fi
     cd gpu-operator
   else
     cd ~/checkout/nvidia/gpu-operator
+    # Fetch to ensure we have latest refs
+    git fetch origin
+    # Check if branch exists
+    if ! git rev-parse --verify origin/$BRANCH >/dev/null 2>&1; then
+      echo "Error: Branch $BRANCH does not exist in the repository"
+      echo "Available branches:"
+      git branch -r | grep -v HEAD
+      echo ""
+      echo "Solutions:"
+      echo "  1. Set GPU_OPERATOR_BRANCH to an existing branch"
+      echo "  2. Use USE_UPSTREAM_GPU_OPERATOR=true to skip custom operator build"
+      echo "  3. Create the $BRANCH branch in the repository"
+      exit 1
+    fi
     git switch $BRANCH
     git pull
   fi
@@ -402,15 +463,23 @@ fi
 helm repo update
 
 # Create a values.yaml file
+# When using precompiled drivers, set version to the branch (major) number
+if [ "$USE_PRECOMPILED" == "true" ]; then
+  HELM_DRIVER_VERSION="${NVIDIA_DRIVER_VERSION%%.*}"
+else
+  HELM_DRIVER_VERSION="${NVIDIA_DRIVER_VERSION}"
+fi
+
 if [ "$USE_UPSTREAM_GPU_OPERATOR" == "true" ]; then
   # When using upstream, don't override operator settings
   cat << EOF > gpu-operator-values.yaml
 driver:
   enabled: true
-  version: ${NVIDIA_DRIVER_VERSION}
+  version: ${HELM_DRIVER_VERSION}
   image: ${DRIVER_IMAGE_NAME}
   kernelModuleType: ${KERNEL_MODULE_TYPE}
   repository: ${DRIVER_REPOSITORY}
+  usePrecompiled: ${USE_PRECOMPILED}
   imagePullPolicy: Always
 
 cdi:
@@ -428,10 +497,11 @@ else
   cat << EOF > gpu-operator-values.yaml
 driver:
   enabled: true
-  version: ${NVIDIA_DRIVER_VERSION}
+  version: ${HELM_DRIVER_VERSION}
   image: ${DRIVER_IMAGE_NAME}
   kernelModuleType: ${KERNEL_MODULE_TYPE}
   repository: ${DRIVER_REPOSITORY}
+  usePrecompiled: ${USE_PRECOMPILED}
   imagePullPolicy: Always
 
 operator:

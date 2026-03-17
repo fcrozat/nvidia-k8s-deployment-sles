@@ -1,0 +1,37 @@
+# config.sh - Private configuration for deploy.sh and upgrade.sh
+# Copy this file to config.sh and fill in your values.
+# config.sh is gitignored and should NOT be committed.
+
+# Per-target host configurations
+# Each target defined by TARGET_OS needs: HOST_<target>, USER_<target>, K8S_DISTRO_<target>
+# Dots in target names are replaced with underscores (e.g. 15.7 -> 15_7)
+# NEEDS_MIRROR_<target>: set to "true" if the target cannot reach INTERNAL_REGISTRY directly
+HOST_15_7=""              # e.g. "my-host.eu-central-1.ip.aws"
+USER_15_7="ec2-user"
+K8S_DISTRO_15_7="k3s"
+NEEDS_MIRROR_15_7="true"
+
+HOST_16_0=""              # e.g. "my-other-host.eu-central-1.ip.aws"
+USER_16_0="ec2-user"
+K8S_DISTRO_16_0="k3s"
+NEEDS_MIRROR_16_0="true"
+
+# Example additional target:
+# HOST_onprem=""          # e.g. "gpu-server.internal.example.com"
+# USER_onprem="admin"
+# K8S_DISTRO_onprem="rke2"
+# NEEDS_MIRROR_onprem="false"
+
+# Default target when TARGET_OS is not set
+DEFAULT_TARGET="15_7"
+
+# Internal registry (used for registries.yaml configuration and mirroring checks)
+INTERNAL_REGISTRY=""      # e.g. "registry.example.com"
+
+# Internal registry for prebuilt driver containers (non-production)
+# Used when USE_PREBUILT_CONTAINER=true (but not "production")
+INTERNAL_DRIVER_REGISTRY_15SP6=""  # e.g. "registry.example.com/nvidia/containerfile_15sp6/nvidia"
+INTERNAL_DRIVER_REGISTRY_15SP7=""  # e.g. "registry.example.com/nvidia/containerfile_15sp7/nvidia"
+
+# Default prebuilt driver repository for upgrade.sh
+DEFAULT_UPGRADE_DRIVER_REPOSITORY=""  # e.g. "registry.example.com/product/nvidia"

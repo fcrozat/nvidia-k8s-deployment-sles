@@ -1,0 +1,4 @@
+kubeconfig
+*.yaml
+*.log
+config.sh

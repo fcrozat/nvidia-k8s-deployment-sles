@@ -1,0 +1,458 @@
+#!/bin/bash -x
+#
+# need to configure ec2 instance with policy allowing kubectl remote control
+#
+
+# Load private configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/config.sh" ]; then
+  source "$SCRIPT_DIR/config.sh"
+else
+  echo "Error: config.sh not found. Copy config.sh.example to config.sh and fill in your values."
+  exit 1
+fi
+
+# Defaults (can be overridden by env vars)
+# TARGET_OS selects a host configuration from config.sh (e.g. 15.7, 16.0, onprem)
+TARGET_KEY="${TARGET_OS:-$DEFAULT_TARGET}"
+TARGET_KEY="${TARGET_KEY//./_}"  # Replace dots for valid variable names
+
+host_var="HOST_${TARGET_KEY}"
+user_var="USER_${TARGET_KEY}"
+distro_var="K8S_DISTRO_${TARGET_KEY}"
+mirror_var="NEEDS_MIRROR_${TARGET_KEY}"
+
+if [ -z "${!host_var}" ]; then
+  echo "Unknown TARGET_OS: $TARGET_OS (no HOST_${TARGET_KEY} defined in config.sh)"
+  exit 1
+fi
+
+TARGET_HOST="${TARGET_HOST:-${!host_var}}"
+TARGET_USER="${TARGET_USER:-${!user_var}}"
+K8S_DISTRO="${K8S_DISTRO:-${!distro_var}}"
+NEEDS_MIRROR="${NEEDS_MIRROR:-${!mirror_var:-false}}"
+USE_PREBUILT_CONTAINER="${USE_PREBUILT_CONTAINER:-false}"
+USE_UPSTREAM_GPU_OPERATOR="${USE_UPSTREAM_GPU_OPERATOR:-false}"
+KERNEL_MODULE_TYPE="${KERNEL_MODULE_TYPE:-auto}"
+
+# Detect SLES version early for log filename
+echo "Detecting SLES version on remote host..."
+SLES=$(ssh $TARGET_USER@$TARGET_HOST 'source /etc/os-release && echo $VERSION_ID')
+if [ -z "$SLES" ]; then
+  echo "Failed to detect SLES version. Defaulting to 15.7"
+  SLES=15.7
+fi
+echo "Detected SLES version: $SLES"
+
+# Set up logging with OS version in filename
+DEPLOY_LOG="${DEPLOY_LOG:-deploy-sles${SLES}.log}"
+# Redirect all output to log file while still showing it in the terminal
+exec > >(tee -a "$DEPLOY_LOG") 2>&1
+
+echo "Targeting: $TARGET_USER@$TARGET_HOST (Distro: $K8S_DISTRO)"
+
+# --- Local Dependency Checks ---
+for cmd in kubectl helm; do
+  if ! command -v $cmd > /dev/null 2>&1; then
+    echo "Error: $cmd could not be found. Please install it."
+    exit 1
+  fi
+done
+
+# --- Remote Dependency Checks ---
+# Install required packages on the remote host if they are not already present.
+ssh $TARGET_USER@$TARGET_HOST "bash -s" << 'EOF'
+  for pkg in git-core podman make; do
+    if ! rpm -q $pkg > /dev/null 2>&1; then
+      echo "Installing remote package: $pkg"
+      sudo zypper in -y $pkg
+    fi
+  done
+
+  # nvidia-container-toolkit must NOT be installed on the host as it conflicts with the GPU Operator
+  if rpm -q nvidia-container-toolkit > /dev/null 2>&1; then
+    echo "Removing nvidia-container-toolkit from host (conflicts with GPU Operator)..."
+    sudo zypper rm -y nvidia-container-toolkit
+  fi
+EOF
+
+# --- Cluster Setup (K3s or RKE2) ---
+if [ "$K8S_DISTRO" == "k3s" ]; then
+    echo "Checking k3s status on remote host..."
+    # Check if k3s service is active on the remote machine
+    if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet k3s"; then
+      echo "k3s not found or not active on remote host. Installing k3s..."
+      # Use the official install script
+      ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.k3s.io | sh -"
+      echo "k3s installed."
+    else
+      echo "k3s is already installed and active on remote host."
+    fi
+    REMOTE_KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
+    REGISTRY_FILE="/etc/rancher/k3s/registries.yaml"
+    SERVICE_NAME="k3s"
+    CONTAINERD_SOCKET="/run/k3s/containerd/containerd.sock"
+elif [ "$K8S_DISTRO" == "rke2" ]; then
+    echo "Using existing RKE2 instance..."
+    REMOTE_KUBECONFIG="/etc/rancher/rke2/rke2.yaml"
+    REGISTRY_FILE="/etc/rancher/rke2/registries.yaml"
+    SERVICE_NAME="rke2-server" # Assuming server node
+    # RKE2 usually uses this socket path as well (symlinked or direct)
+    CONTAINERD_SOCKET="/run/k3s/containerd/containerd.sock"
+else
+    echo "Unknown K8S_DISTRO: $K8S_DISTRO"
+    exit 1
+fi
+
+# SLES version was already detected at the beginning of the script
+
+# Fetch the kubeconfig from the remote node and update it for local access
+KUBECONFIG_PATH="$PWD/${K8S_DISTRO}-sles${SLES}.yaml"
+echo "Fetching kubeconfig from remote host..."
+ssh $TARGET_USER@$TARGET_HOST "sudo cat $REMOTE_KUBECONFIG" > $KUBECONFIG_PATH
+if [ $? -ne 0 ]; then
+    echo "Failed to fetch kubeconfig from remote host."
+    exit 1
+fi
+sed -i "s/127.0.0.1/$TARGET_HOST/g" $KUBECONFIG_PATH
+# Configure insecure-skip-tls-verify since the hostname won't match the cert
+sed -i 's/certificate-authority-data:.*/insecure-skip-tls-verify: true/g' $KUBECONFIG_PATH
+export KUBECONFIG=$KUBECONFIG_PATH
+echo "Kubeconfig saved to $KUBECONFIG"
+
+
+# --- Configure CoreDNS ---
+echo "Configuring CoreDNS to use /etc/hosts from the instance..."
+cat <<'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  hosts.server: |
+    hosts /etc/hosts
+EOF
+
+echo "Restarting CoreDNS to apply the new configuration..."
+# Detect CoreDNS deployment name
+if kubectl -n kube-system get deployment coredns >/dev/null 2>&1; then
+    COREDNS_DEPLOYMENT="coredns"
+elif kubectl -n kube-system get deployment rke2-coredns-rke2-coredns >/dev/null 2>&1; then
+    COREDNS_DEPLOYMENT="rke2-coredns-rke2-coredns"
+else
+    COREDNS_DEPLOYMENT=$(kubectl -n kube-system get deployment -l k8s-app=kube-dns -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+fi
+
+if [ -n "$COREDNS_DEPLOYMENT" ]; then
+    kubectl -n kube-system rollout restart deployment $COREDNS_DEPLOYMENT
+    kubectl -n kube-system rollout status deployment/$COREDNS_DEPLOYMENT --timeout=5m
+else
+    echo "Warning: Could not find CoreDNS deployment. Skipping restart."
+fi
+
+
+# --- In-Cluster Registry Setup ---
+kubectl config use-context default
+kubectl get node -o wide
+kubectl apply -f container-registry.yaml
+
+# Wait for the registry to be ready
+kubectl -n local-registry rollout status deployment/docker-registry --timeout=5m
+
+# Get the ClusterIP of the registry service.
+REGISTRY_IP=$(kubectl -n local-registry get service docker-registry -o jsonpath='{.spec.clusterIP}')
+if [ -z "$REGISTRY_IP" ]; then
+    echo "Failed to get registry ClusterIP"
+    exit 1
+fi
+echo "Registry ClusterIP: $REGISTRY_IP"
+
+# --- Configure K8s Node for insecure registry ---
+CONFIG_CHECK=$(ssh $TARGET_USER@$TARGET_HOST "grep -q '$REGISTRY_IP:5000' $REGISTRY_FILE 2>/dev/null && grep -q '$INTERNAL_REGISTRY' $REGISTRY_FILE 2>/dev/null && echo 'CONFIGURED'")
+
+if [ "$CONFIG_CHECK" == "CONFIGURED" ]; then
+    echo "Cluster already configured for insecure registry."
+else
+    echo "Configuring node to trust the insecure registry..."
+    ssh $TARGET_USER@$TARGET_HOST "bash -s" << EOF
+set -e
+# Ensure dir exists (likely already does)
+sudo mkdir -p $(dirname $REGISTRY_FILE)
+cat << REG_EOF | sudo tee $REGISTRY_FILE
+mirrors:
+  "$REGISTRY_IP:5000":
+    endpoint:
+      - "http://$REGISTRY_IP:5000"
+  "$INTERNAL_REGISTRY":
+    endpoint:
+      - "https://$INTERNAL_REGISTRY"
+configs:
+  "$INTERNAL_REGISTRY":
+    tls:
+      insecure_skip_verify: true
+REG_EOF
+echo "Restarting service $SERVICE_NAME to apply registry configuration..."
+sudo systemctl restart $SERVICE_NAME
+EOF
+
+    # Wait for the cluster to become ready again
+    echo "Waiting for Kubernetes API to be ready after restart..."
+    until kubectl get nodes &> /dev/null; do
+      echo -n "."
+      sleep 5
+    done
+    echo -e "\nKubernetes API is ready."
+fi
+
+
+# --- Remote Container Build and Push ---
+NVIDIA_DRIVER_VERSION="${NVIDIA_DRIVER_VERSION:-580.126.09}"
+GPU_OPERATOR_VERSION="${GPU_OPERATOR_VERSION:-v25.10.1}"
+DRIVER_CONTAINER_BRANCH="${DRIVER_CONTAINER_BRANCH:-sles15-refresh}"
+DRIVER_IMAGE_NAME="${DRIVER_IMAGE_NAME:-driver}"
+
+# SLES version was already detected earlier for kubeconfig naming
+FINAL_REGISTRY_TAG="${NVIDIA_DRIVER_VERSION}-sles${SLES}"
+
+if [ "$USE_PREBUILT_CONTAINER" != "false" ]; then
+    if [ "$USE_PREBUILT_CONTAINER" == "production" ]; then
+        PREBUILT_DRIVER_REPOSITORY="registry.suse.com/third-party/nvidia"
+    else
+        if [[ "$SLES" == "15.6" ]]; then
+            DEFAULT_INTERNAL_REGISTRY="$INTERNAL_DRIVER_REGISTRY_15SP6"
+        else
+            DEFAULT_INTERNAL_REGISTRY="$INTERNAL_DRIVER_REGISTRY_15SP7"
+        fi
+        PREBUILT_DRIVER_REPOSITORY=${DRIVER_REPOSITORY:-"$DEFAULT_INTERNAL_REGISTRY"}
+    fi
+    PREBUILT_DRIVER_IMAGE="${PREBUILT_DRIVER_REPOSITORY}/${DRIVER_IMAGE_NAME}:${FINAL_REGISTRY_TAG}"
+
+    # Mirror if target cannot reach internal registry directly
+    if [[ "$NEEDS_MIRROR" == "true" && "$USE_PREBUILT_CONTAINER" != "production" && "$PREBUILT_DRIVER_REPOSITORY" == *"$INTERNAL_REGISTRY"* ]]; then
+        echo "Target needs mirroring and fetching from $INTERNAL_REGISTRY, mirroring prebuilt image via local system..."
+        DRIVER_REPOSITORY="${REGISTRY_IP}:5000/nvidia"
+        if ! podman pull "$PREBUILT_DRIVER_IMAGE"; then
+            echo "Error: Failed to pull prebuilt driver image $PREBUILT_DRIVER_IMAGE"
+            exit 1
+        fi
+        if ! podman save "$PREBUILT_DRIVER_IMAGE" | ssh $TARGET_USER@$TARGET_HOST "podman load"; then
+            echo "Error: Failed to transfer prebuilt driver image to remote host"
+            exit 1
+        fi
+    else
+        DRIVER_REPOSITORY="$PREBUILT_DRIVER_REPOSITORY"
+    fi
+    echo "Using driver repository: $DRIVER_REPOSITORY"
+else
+    DRIVER_REPOSITORY="${REGISTRY_IP}:5000/nvidia"
+fi
+
+echo "Building and pushing container on remote host..."
+if ! ssh $TARGET_USER@$TARGET_HOST \
+  NVIDIA_DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" \
+  GPU_OPERATOR_VERSION="$GPU_OPERATOR_VERSION" \
+  SLES="$SLES" \
+  FINAL_REGISTRY_TAG="$FINAL_REGISTRY_TAG" \
+  REGISTRY_IP="$REGISTRY_IP" \
+  DRIVER_CONTAINER_BRANCH="$DRIVER_CONTAINER_BRANCH" \
+  USE_PREBUILT_CONTAINER="$USE_PREBUILT_CONTAINER" \
+  USE_UPSTREAM_GPU_OPERATOR="$USE_UPSTREAM_GPU_OPERATOR" \
+  DRIVER_IMAGE_NAME="$DRIVER_IMAGE_NAME" \
+  NEEDS_MIRROR="$NEEDS_MIRROR" \
+  INTERNAL_REGISTRY="$INTERNAL_REGISTRY" \
+  PREBUILT_DRIVER_IMAGE="$PREBUILT_DRIVER_IMAGE" \
+  PREBUILT_DRIVER_REPOSITORY="$PREBUILT_DRIVER_REPOSITORY" \
+  'bash -s' << 'EOF'
+set -e
+
+# Derive major driver branch from version (e.g. 580.126.09 -> 580)
+DRIVER_BRANCH="${NVIDIA_DRIVER_VERSION%%.*}"
+
+# Derive driver generation from major version
+if [ "$DRIVER_BRANCH" -lt 460 ]; then
+  DRIVER_GENERATION="G04"
+elif [ "$DRIVER_BRANCH" -le 545 ]; then
+  DRIVER_GENERATION="G05"
+elif [ "$DRIVER_BRANCH" -le 580 ]; then
+  DRIVER_GENERATION="G06"
+else
+  DRIVER_GENERATION="G07"
+fi
+echo "Driver branch: $DRIVER_BRANCH, Driver generation: $DRIVER_GENERATION"
+
+# Enable public cloud way to access suseconnect
+sudo systemctl enable --now containerbuild-regionsrv || true
+
+if [ "$USE_PREBUILT_CONTAINER" != "false" ]; then
+  if [[ "$NEEDS_MIRROR" == "true" && "$USE_PREBUILT_CONTAINER" != "production" && "$PREBUILT_DRIVER_IMAGE" == *"$INTERNAL_REGISTRY"* ]]; then
+    echo "Mirroring $PREBUILT_DRIVER_IMAGE to $REGISTRY_IP:5000/nvidia/$DRIVER_IMAGE_NAME:$FINAL_REGISTRY_TAG ..."
+    # Image should already be loaded by local system when mirroring is needed
+    podman push --tls-verify=false "$PREBUILT_DRIVER_IMAGE" "$REGISTRY_IP:5000/nvidia/$DRIVER_IMAGE_NAME:$FINAL_REGISTRY_TAG"
+  else
+    echo "Skipping driver build/push (using prebuilt driver container directly from $PREBUILT_DRIVER_IMAGE)."
+  fi
+else
+  BRANCH="$DRIVER_CONTAINER_BRANCH"
+
+  # Determine build directory based on branch
+  if [[ "$BRANCH" == *"packages"* || "$BRANCH" == *"cuda"* ]]; then
+    BUILD_DIR="sle15/official-packages"
+  else
+    BUILD_DIR="sle15"
+  fi
+  echo "Using branch: $BRANCH"
+  echo "Build directory: $BUILD_DIR"
+
+  # Clone the driver container repo
+  if [ ! -d "$HOME/checkout/nvidia/gpu-driver-container" ]; then
+    mkdir -p ~/checkout/nvidia
+    cd ~/checkout/nvidia
+    git clone -b $BRANCH https://github.com/fcrozat/gpu-driver-container.git
+  else
+    cd ~/checkout/nvidia/gpu-driver-container
+    # Check if we need to switch branches
+    CURRENT_BRANCH=$(git branch --show-current)
+    if [ "$CURRENT_BRANCH" != "$BRANCH" ]; then
+        git fetch origin
+        git switch $BRANCH
+    fi
+    git pull
+  fi
+  cd ~/checkout/nvidia/gpu-driver-container/$BUILD_DIR
+
+  if [ "$DRIVER_CONTAINER_BRANCH" == "cuda-combined-container" ]; then
+    # Build additional images
+    echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH -t nvidia/driver-open:$NVIDIA_DRIVER_VERSION-sles$SLES -f Dockerfile.open"
+    podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH"  -t "nvidia/driver-open:$NVIDIA_DRIVER_VERSION-sles$SLES" -f Dockerfile.open
+    echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH -t nvidia/driver-closed:$NVIDIA_DRIVER_VERSION-sles$SLES -f Dockerfile.closed"
+    podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH"  -t "nvidia/driver-closed:$NVIDIA_DRIVER_VERSION-sles$SLES" -f Dockerfile.closed
+  fi
+
+  # Build the driver image
+  echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH -t nvidia/nvidia-gpu-driver:$NVIDIA_DRIVER_VERSION ."
+  podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH"  -t "nvidia/nvidia-gpu-driver:$NVIDIA_DRIVER_VERSION" .
+
+  # Push the image
+  echo "Pushing image nvidia/nvidia-gpu-driver:$NVIDIA_DRIVER_VERSION to in-cluster registry as $REGISTRY_IP:5000/nvidia/$DRIVER_IMAGE_NAME:$FINAL_REGISTRY_TAG ..."
+  podman push --tls-verify=false "nvidia/nvidia-gpu-driver:$NVIDIA_DRIVER_VERSION" "$REGISTRY_IP:5000/nvidia/$DRIVER_IMAGE_NAME:$FINAL_REGISTRY_TAG"
+fi
+
+if [ "$USE_UPSTREAM_GPU_OPERATOR" != "true" ]; then
+  # Clone the gpu-operator container repo
+  BRANCH=suse_lib_modules
+  if [ ! -d "$HOME/checkout/nvidia/gpu-operator" ]; then
+    mkdir -p ~/checkout/nvidia
+    cd ~/checkout/nvidia
+    git clone -b $BRANCH https://github.com/fcrozat/gpu-operator.git
+    cd gpu-operator
+  else
+    cd ~/checkout/nvidia/gpu-operator
+    git switch $BRANCH
+    git pull
+  fi
+
+  # Build the gpu-operator image
+  echo "Running: make DOCKER=podman DOCKER_BUILD_OPTIONS=\"--from registry.suse.com/bci/golang:1.25\" build-image"
+  make DOCKER=podman DOCKER_BUILD_OPTIONS="--from registry.suse.com/bci/golang:1.25"  build-image
+
+
+  # Push the image
+  echo "Pushing image to in-cluster registry..."
+  podman push --tls-verify=false "nvcr.io/nvidia/cloud-native/gpu-operator:$GPU_OPERATOR_VERSION" "$REGISTRY_IP:5000/nvidia/cloud-native/gpu-operator:$GPU_OPERATOR_VERSION"
+else
+  echo "Skipping custom GPU operator build (using upstream version)."
+fi
+
+EOF
+then
+    echo "Remote build and push failed."
+    exit 1
+fi
+
+# --- Local Helm Install ---
+RELEASE_NAME=gpu-operator-release
+NAMESPACE=gpu-operator
+
+# 1. Delete nvidia.com and nfd.k8s-sigs.io CRDs, which will also delete all their custom resources
+echo "Deleting nvidia.com and nfd CRDs to ensure a clean slate..."
+kubectl get crd -o name | grep -E 'nvidia.com|nfd.k8s-sigs.io' | xargs -r kubectl delete
+
+echo "Deleting cluster-wide resources..."
+kubectl delete clusterrolebinding gpu-operator --ignore-not-found=true
+kubectl delete clusterrole gpu-operator --ignore-not-found=true
+
+echo "Deleting namespace '$NAMESPACE'..."
+kubectl delete namespace $NAMESPACE --ignore-not-found=true
+
+echo "Waiting for namespace '$NAMESPACE' to terminate..."
+while kubectl get namespace $NAMESPACE > /dev/null 2>&1; do
+  echo -n "."
+  sleep 2
+done
+echo -e "\nNamespace '$NAMESPACE' terminated."
+
+echo "Installing GPU Operator via Helm..."
+
+kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+if ! helm repo list | grep -q "^nvidia"; then
+  helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+fi
+helm repo update
+
+# Create a values.yaml file
+if [ "$USE_UPSTREAM_GPU_OPERATOR" == "true" ]; then
+  # When using upstream, don't override operator settings
+  cat << EOF > gpu-operator-values.yaml
+driver:
+  enabled: true
+  version: ${NVIDIA_DRIVER_VERSION}
+  image: ${DRIVER_IMAGE_NAME}
+  kernelModuleType: ${KERNEL_MODULE_TYPE}
+  repository: ${DRIVER_REPOSITORY}
+  imagePullPolicy: Always
+
+cdi:
+  enabled: true
+
+toolkit:
+  enabled: true
+  imagePullPolicy: Always
+  env:
+    - name: CONTAINERD_SOCKET
+      value: ${CONTAINERD_SOCKET}
+EOF
+else
+  # When using patched operator, specify custom operator settings
+  cat << EOF > gpu-operator-values.yaml
+driver:
+  enabled: true
+  version: ${NVIDIA_DRIVER_VERSION}
+  image: ${DRIVER_IMAGE_NAME}
+  kernelModuleType: ${KERNEL_MODULE_TYPE}
+  repository: ${DRIVER_REPOSITORY}
+  imagePullPolicy: Always
+
+operator:
+  repository: ${REGISTRY_IP}:5000
+  image: nvidia/cloud-native/gpu-operator
+  imagePullPolicy: Always
+
+cdi:
+  enabled: true
+
+toolkit:
+  enabled: true
+  imagePullPolicy: Always
+  env:
+    - name: CONTAINERD_SOCKET
+      value: ${CONTAINERD_SOCKET}
+EOF
+fi
+
+helm install $RELEASE_NAME nvidia/gpu-operator -n $NAMESPACE --create-namespace \
+    --version=$GPU_OPERATOR_VERSION \
+    -f gpu-operator-values.yaml
+
+rm gpu-operator-values.yaml

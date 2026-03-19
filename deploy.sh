@@ -435,6 +435,222 @@ fi
 RELEASE_NAME=gpu-operator-release
 NAMESPACE=gpu-operator
 
+patch_upstream_precompiled_driver_manifest() {
+  local override_dir override_file patched_file operator_pod state_driver_manifest_path
+
+  echo "Preparing upstream GPU Operator override so precompiled driver pods mount host /lib/modules..."
+  kubectl -n "$NAMESPACE" rollout status deployment/gpu-operator --timeout=5m
+
+  operator_pod=$(kubectl -n "$NAMESPACE" get pods -l app=gpu-operator -o jsonpath='{.items[0].metadata.name}')
+  if [ -z "$operator_pod" ]; then
+    echo "Error: Failed to find the gpu-operator pod needed to extract the upstream driver manifest."
+    exit 1
+  fi
+
+  if kubectl -n "$NAMESPACE" exec "$operator_pod" -- test -f /opt/gpu-operator/state-driver/0500_daemonset.yaml; then
+    state_driver_manifest_path=/opt/gpu-operator/state-driver/0500_daemonset.yaml
+  elif kubectl -n "$NAMESPACE" exec "$operator_pod" -- test -f /opt/gpu-operator/manifests/state-driver/0500_daemonset.yaml; then
+    state_driver_manifest_path=/opt/gpu-operator/manifests/state-driver/0500_daemonset.yaml
+  else
+    echo "Error: Could not find state-driver/0500_daemonset.yaml in the gpu-operator pod."
+    exit 1
+  fi
+
+  override_dir=$(mktemp -d)
+  override_file="$override_dir/0500_daemonset.yaml"
+
+  if ! kubectl -n "$NAMESPACE" exec "$operator_pod" -- cat "$state_driver_manifest_path" > "$override_file"; then
+    echo "Error: Failed to extract $state_driver_manifest_path from the gpu-operator pod."
+    rm -rf "$override_dir"
+    exit 1
+  fi
+
+  if ! grep -Fq 'name: lib-modules' "$override_file"; then
+    patched_file="$override_dir/0500_daemonset.patched.yaml"
+
+    if ! awk '
+      BEGIN {
+        in_mount_nv = 0
+        in_volume_nv = 0
+        mount_done = 0
+        volume_done = 0
+      }
+
+      {
+        if (!mount_done && $0 == "          {{- if and .AdditionalConfigs .AdditionalConfigs.VolumeMounts }}") {
+          print "          - name: lib-modules"
+          print "            mountPath: /run/host/lib/modules"
+          print "            readOnly: true"
+          mount_done = 1
+        }
+
+        if (!volume_done && $0 == "        {{- if and .AdditionalConfigs .AdditionalConfigs.Volumes }}") {
+          print "        - name: lib-modules"
+          print "          hostPath:"
+          print "            path: /lib/modules"
+          print "            type: Directory"
+          volume_done = 1
+        }
+
+        if (!volume_done && $0 == "        - name: driver-startup-probe-script") {
+          print "        - name: lib-modules"
+          print "          hostPath:"
+          print "            path: /lib/modules"
+          print "            type: Directory"
+          volume_done = 1
+        }
+
+        if (!mount_done && $0 == "        startupProbe:") {
+          print "          - name: lib-modules"
+          print "            mountPath: /run/host/lib/modules"
+          print "            readOnly: true"
+          mount_done = 1
+        }
+
+        print
+
+        if ($0 == "          - name: nv-firmware") {
+          in_mount_nv = 1
+        } else if (in_mount_nv && $0 ~ /^          - name:/) {
+          in_mount_nv = 0
+        }
+
+        if ($0 == "        - name: nv-firmware") {
+          in_volume_nv = 1
+        } else if (in_volume_nv && $0 ~ /^        - name:/) {
+          in_volume_nv = 0
+        }
+
+        if (!mount_done && in_mount_nv && $0 == "            mountPath: /lib/firmware") {
+          print "          - name: lib-modules"
+          print "            mountPath: /run/host/lib/modules"
+          print "            readOnly: true"
+          mount_done = 1
+          in_mount_nv = 0
+        }
+
+        if (!volume_done && in_volume_nv && $0 == "            type: DirectoryOrCreate") {
+          print "        - name: lib-modules"
+          print "          hostPath:"
+          print "            path: /lib/modules"
+          print "            type: Directory"
+          volume_done = 1
+          in_volume_nv = 0
+        }
+      }
+
+      END {
+        if (!mount_done || !volume_done) {
+          exit 1
+        }
+      }
+    ' "$override_file" > "$patched_file"; then
+      echo "Error: Failed to patch the upstream state-driver manifest with the /lib/modules mount."
+      rm -rf "$override_dir"
+      exit 1
+    fi
+
+    mv "$patched_file" "$override_file"
+  fi
+
+  kubectl -n "$NAMESPACE" create configmap gpu-operator-state-driver-override \
+    --from-file=0500_daemonset.yaml="$override_file" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+  kubectl -n "$NAMESPACE" patch deployment gpu-operator --type='strategic' -p="{
+    \"spec\": {
+      \"template\": {
+        \"spec\": {
+          \"volumes\": [
+            {
+              \"name\": \"state-driver-override\",
+              \"configMap\": {
+                \"name\": \"gpu-operator-state-driver-override\"
+              }
+            }
+          ],
+          \"containers\": [
+            {
+              \"name\": \"gpu-operator\",
+              \"volumeMounts\": [
+                {
+                  \"name\": \"state-driver-override\",
+                  \"mountPath\": \"${state_driver_manifest_path}\",
+                  \"subPath\": \"0500_daemonset.yaml\",
+                  \"readOnly\": true
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }"
+
+  kubectl -n "$NAMESPACE" rollout restart deployment/gpu-operator
+  kubectl -n "$NAMESPACE" rollout status deployment/gpu-operator --timeout=5m
+
+  rm -rf "$override_dir"
+}
+
+verify_upstream_precompiled_driver_override() {
+  local clusterpolicy_driver_enabled clusterpolicy_use_precompiled deployment_override_mount ds_name ds_mount_path ds_volume_path ds_update_strategy attempt
+
+  clusterpolicy_driver_enabled=$(kubectl get clusterpolicies.nvidia.com/cluster-policy -o jsonpath='{.spec.driver.enabled}')
+  if [ "$clusterpolicy_driver_enabled" != "true" ]; then
+    echo "Error: ClusterPolicy spec.driver.enabled is '$clusterpolicy_driver_enabled', expected 'true'."
+    exit 1
+  fi
+
+  clusterpolicy_use_precompiled=$(kubectl get clusterpolicies.nvidia.com/cluster-policy -o jsonpath='{.spec.driver.usePrecompiled}')
+  if [ "$USE_PRECOMPILED" = "true" ] && [ "$clusterpolicy_use_precompiled" != "true" ]; then
+    echo "Error: ClusterPolicy spec.driver.usePrecompiled is '$clusterpolicy_use_precompiled', expected 'true'."
+    exit 1
+  fi
+
+  if [ "$USE_PRECOMPILED" != "true" ] && [ "$clusterpolicy_use_precompiled" != "false" ]; then
+    echo "Error: ClusterPolicy spec.driver.usePrecompiled is '$clusterpolicy_use_precompiled', expected 'false'."
+    exit 1
+  fi
+
+  if ! kubectl -n "$NAMESPACE" get configmap gpu-operator-state-driver-override > /dev/null 2>&1; then
+    echo "Error: ConfigMap gpu-operator-state-driver-override was not created."
+    exit 1
+  fi
+
+  deployment_override_mount=$(kubectl -n "$NAMESPACE" get deployment gpu-operator -o jsonpath="{.spec.template.spec.containers[?(@.name=='gpu-operator')].volumeMounts[?(@.name=='state-driver-override')].mountPath}")
+  if [ "$deployment_override_mount" != "/opt/gpu-operator/state-driver/0500_daemonset.yaml" ] && [ "$deployment_override_mount" != "/opt/gpu-operator/manifests/state-driver/0500_daemonset.yaml" ]; then
+    echo "Error: gpu-operator deployment is not mounting the overridden state-driver manifest."
+    exit 1
+  fi
+
+  for attempt in $(seq 1 60); do
+    ds_name=$(kubectl -n "$NAMESPACE" get daemonsets -o jsonpath='{.items[?(@.metadata.labels.app=="nvidia-driver-daemonset")].metadata.name}')
+    if [ -n "$ds_name" ]; then
+      break
+    fi
+    sleep 5
+  done
+
+  if [ -z "$ds_name" ]; then
+    echo "Error: nvidia-driver-daemonset was not created after re-enabling the driver."
+    exit 1
+  fi
+
+  ds_update_strategy=$(kubectl -n "$NAMESPACE" get daemonset "$ds_name" -o jsonpath='{.spec.updateStrategy.type}')
+  if [ "$ds_update_strategy" = "RollingUpdate" ]; then
+    kubectl -n "$NAMESPACE" rollout status daemonset/"$ds_name" --timeout=10m
+  fi
+
+  ds_mount_path=$(kubectl -n "$NAMESPACE" get daemonset "$ds_name" -o jsonpath="{.spec.template.spec.containers[?(@.name=='nvidia-driver-ctr')].volumeMounts[?(@.name=='lib-modules')].mountPath}")
+  ds_volume_path=$(kubectl -n "$NAMESPACE" get daemonset "$ds_name" -o jsonpath="{.spec.template.spec.volumes[?(@.name=='lib-modules')].hostPath.path}")
+
+  if [ "$ds_mount_path" != "/run/host/lib/modules" ] || [ "$ds_volume_path" != "/lib/modules" ]; then
+    echo "Error: nvidia-driver-daemonset is missing the expected /lib/modules host mount."
+    exit 1
+  fi
+}
+
 # 1. Delete nvidia.com and nfd.k8s-sigs.io CRDs, which will also delete all their custom resources
 echo "Deleting nvidia.com and nfd CRDs to ensure a clean slate..."
 kubectl get crd -o name | grep -E 'nvidia.com|nfd.k8s-sigs.io' | xargs -r kubectl delete
@@ -471,10 +687,16 @@ else
 fi
 
 if [ "$USE_UPSTREAM_GPU_OPERATOR" == "true" ]; then
+  INITIAL_DRIVER_ENABLED=false
+else
+  INITIAL_DRIVER_ENABLED=true
+fi
+
+if [ "$USE_UPSTREAM_GPU_OPERATOR" == "true" ]; then
   # When using upstream, don't override operator settings
   cat << EOF > gpu-operator-values.yaml
 driver:
-  enabled: true
+  enabled: ${INITIAL_DRIVER_ENABLED}
   version: ${HELM_DRIVER_VERSION}
   image: ${DRIVER_IMAGE_NAME}
   kernelModuleType: ${KERNEL_MODULE_TYPE}
@@ -496,7 +718,7 @@ else
   # When using patched operator, specify custom operator settings
   cat << EOF > gpu-operator-values.yaml
 driver:
-  enabled: true
+  enabled: ${INITIAL_DRIVER_ENABLED}
   version: ${HELM_DRIVER_VERSION}
   image: ${DRIVER_IMAGE_NAME}
   kernelModuleType: ${KERNEL_MODULE_TYPE}
@@ -524,5 +746,15 @@ fi
 helm install $RELEASE_NAME nvidia/gpu-operator -n $NAMESPACE --create-namespace \
     --version=$GPU_OPERATOR_VERSION \
     -f gpu-operator-values.yaml
+
+if [ "$USE_UPSTREAM_GPU_OPERATOR" == "true" ]; then
+  patch_upstream_precompiled_driver_manifest
+
+  echo "Enabling the driver after applying the upstream manifest override..."
+  kubectl patch clusterpolicies.nvidia.com/cluster-policy --type='json' \
+    -p='[{"op": "replace", "path": "/spec/driver/enabled", "value":true}]'
+
+  verify_upstream_precompiled_driver_override
+fi
 
 rm gpu-operator-values.yaml

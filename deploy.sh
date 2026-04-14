@@ -21,6 +21,7 @@ host_var="HOST_${TARGET_KEY}"
 user_var="USER_${TARGET_KEY}"
 distro_var="K8S_DISTRO_${TARGET_KEY}"
 mirror_var="NEEDS_MIRROR_${TARGET_KEY}"
+helm_priv_reg_var="USE_HELM_PRIVATE_REGISTRY_${TARGET_KEY}"
 
 if [ -z "${!host_var}" ]; then
   echo "Unknown TARGET_OS: $TARGET_OS (no HOST_${TARGET_KEY} defined in config.sh)"
@@ -37,6 +38,10 @@ KERNEL_MODULE_TYPE="${KERNEL_MODULE_TYPE:-auto}"
 USE_PRECOMPILED="${USE_PRECOMPILED:-false}"
 GPU_OPERATOR_BRANCH="${GPU_OPERATOR_BRANCH:-}"  # Optional override for GPU operator branch
 GPU_OPERATOR_IMAGE="${GPU_OPERATOR_IMAGE:-}"  # Optional override for GPU operator image
+
+# Handle private Helm registry settings
+USE_HELM_PRIVATE_REGISTRY="${USE_HELM_PRIVATE_REGISTRY:-${!helm_priv_reg_var:-false}}"
+# HELM_PRIVATE_URL and NGC_API_KEY are global (from environment or config.sh)
 
 # Detect SLES version early for log filename
 echo "Detecting SLES version on remote host..."
@@ -696,10 +701,38 @@ echo "Installing GPU Operator via Helm..."
 
 kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
 
-if ! helm repo list | grep -q "^nvidia"; then
-  helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+if [ "$USE_HELM_PRIVATE_REGISTRY" == "true" ]; then
+  if [ -z "$HELM_PRIVATE_URL" ]; then
+    echo "Error: HELM_PRIVATE_URL is not set but USE_HELM_PRIVATE_REGISTRY=true (Target: $TARGET_OS)."
+    exit 1
+  fi
+  if [ -z "$NGC_API_KEY" ]; then
+    echo "Error: NGC_API_KEY is not set but USE_HELM_PRIVATE_REGISTRY=true (Target: $TARGET_OS)."
+    exit 1
+  fi
+
+  # Construct full URL if it's just a base path
+  if [[ "$HELM_PRIVATE_URL" != *.tgz ]]; then
+      FULL_HELM_URL="${HELM_PRIVATE_URL%/}/gpu-operator-${GPU_OPERATOR_VERSION}.tgz"
+  else
+      FULL_HELM_URL="$HELM_PRIVATE_URL"
+  fi
+
+  echo "Fetching GPU Operator chart from URL: $FULL_HELM_URL"
+  # Fetch the chart locally
+  if ! helm fetch "$FULL_HELM_URL" --username='$oauthtoken' --password="$NGC_API_KEY"; then
+    echo "Error: Failed to fetch Helm chart from $FULL_HELM_URL"
+    exit 1
+  fi
+  CHART_FILE=$(basename "$FULL_HELM_URL")
+  HELM_CHART="./$CHART_FILE"
+else
+  if ! helm repo list | grep -q "^nvidia"; then
+    helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+  fi
+  helm repo update
+  HELM_CHART="nvidia/gpu-operator"
 fi
-helm repo update
 
 # Create a values.yaml file
 # When using precompiled drivers, set version to the branch (major) number
@@ -765,18 +798,38 @@ toolkit:
 EOF
 fi
 
-helm install $RELEASE_NAME nvidia/gpu-operator -n $NAMESPACE --create-namespace \
-    --version=$GPU_OPERATOR_VERSION \
-    -f gpu-operator-values.yaml
+HELM_INSTALL_ARGS=("$RELEASE_NAME" "$HELM_CHART" "-n" "$NAMESPACE" "--create-namespace" "-f" "gpu-operator-values.yaml")
+if [ "$USE_HELM_PRIVATE_REGISTRY" != "true" ]; then
+    HELM_INSTALL_ARGS+=("--version" "$GPU_OPERATOR_VERSION")
+fi
+
+helm install "${HELM_INSTALL_ARGS[@]}"
+
+# Function to compare versions (e.g. v26.3.1)
+# Returns 0 if $1 > $2, 1 otherwise
+version_gt() {
+    local v1=$(echo "$1" | sed 's/^v//')
+    local v2=$(echo "$2" | sed 's/^v//')
+    [ "$v1" != "$v2" ] && [ "$(printf '%s\n' "$v1" "$v2" | sort -V | head -n1)" == "$v2" ]
+}
 
 if [ "$USE_UPSTREAM_GPU_OPERATOR" == "true" ]; then
-  patch_upstream_precompiled_driver_manifest
+  if version_gt "$GPU_OPERATOR_VERSION" "v26.3.0"; then
+    echo "GPU_OPERATOR_VERSION is $GPU_OPERATOR_VERSION (> v26.3.0), skipping upstream manifest patching."
+  else
+    patch_upstream_precompiled_driver_manifest
+  fi
 
-  echo "Enabling the driver after applying the upstream manifest override..."
+  echo "Enabling the driver after applying any manifest overrides..."
   kubectl patch clusterpolicies.nvidia.com/cluster-policy --type='json' \
     -p='[{"op": "replace", "path": "/spec/driver/enabled", "value":true}]'
 
-  verify_upstream_precompiled_driver_override
+  if ! version_gt "$GPU_OPERATOR_VERSION" "v26.3.0"; then
+    verify_upstream_precompiled_driver_override
+  fi
 fi
 
 rm gpu-operator-values.yaml
+if [ "$USE_HELM_PRIVATE_REGISTRY" == "true" ]; then
+  rm -f "$HELM_CHART"
+fi

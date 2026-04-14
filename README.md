@@ -36,6 +36,9 @@ All host-specific settings are stored in `config.sh` (gitignored). Each target i
 | `INTERNAL_REGISTRY` | Internal registry domain (used for registries.yaml configuration and mirroring). |
 | `INTERNAL_DRIVER_REGISTRY_*` | Full registry paths for prebuilt driver containers per SLES service pack. |
 | `DEFAULT_UPGRADE_DRIVER_REPOSITORY` | Default prebuilt driver repository for `upgrade.sh`. |
+| `USE_HELM_PRIVATE_REGISTRY` | Set to `true` (globally or per-target) to use a private Helm repository for the GPU Operator chart instead of the default NVIDIA repository. |
+| `HELM_PRIVATE_URL` | **Global**: Base URL or full path to a private Helm chart for the GPU Operator. If it's a base URL (no `.tgz`), the filename is assumed to be `gpu-operator-${GPU_OPERATOR_VERSION}.tgz`. |
+| `NGC_API_KEY` | **Global**: API Key for authenticating with the private Helm repository (used as the password with `$oauthtoken` as the username). |
 
 See `config.sh.example` for the full template.
 
@@ -57,11 +60,14 @@ These environment variables can override config.sh values or control script beha
 | `DRIVER_IMAGE_NAME` | `driver` | Name of the driver image to build and push. |
 | `DRIVER_REPOSITORY` | _auto-derived_ | Override the prebuilt driver repository location (used with `USE_PREBUILT_CONTAINER=true`). |
 | `USE_PREBUILT_CONTAINER` | `false` | If `true`, pulls pre-built images from the internal registry (configured in `config.sh`). If `production`, uses the public `registry.suse.com/third-party/nvidia`. |
-| `USE_UPSTREAM_GPU_OPERATOR` | `false` | If `true`, uses the upstream GPU Operator from NVIDIA. `deploy.sh` installs the operator with the driver temporarily disabled, mounts an overridden upstream `state-driver/0500_daemonset.yaml` into the operator deployment so the driver pod gets a host `/lib/modules` mount, then re-enables the driver. |
+| `USE_UPSTREAM_GPU_OPERATOR` | `false` | If `true`, uses the upstream GPU Operator from NVIDIA. For versions prior to or equal to `v26.3.0`, `deploy.sh` installs the operator with the driver temporarily disabled, mounts an overridden upstream `state-driver/0500_daemonset.yaml` into the operator deployment so the driver pod gets a host `/lib/modules` mount, then re-enables the driver. For versions `> v26.3.0`, this patching is skipped as it is natively supported or no longer required. |
 | `KERNEL_MODULE_TYPE` | `auto` | Type of kernel module to use (`auto`, `proprietary`, `open-gpu-kernel-modules`). |
 | `USE_PRECOMPILED` | `false` | If `true`, enables precompiled driver containers in the GPU Operator. The driver version is automatically set to the branch (e.g. `580` instead of `580.126.09`), and when building locally (`USE_PREBUILT_CONTAINER=false`), the container image tag follows the format `<branch>-<kernel-version>-sles<version>` (e.g. `580-5.14.21-150500.55.73-default-sles15.7`). Also switches GPU operator to `precompiled_lib_modules_mount` branch instead of `suse_lib_modules` (unless `GPU_OPERATOR_BRANCH` is set). See [NVIDIA precompiled drivers docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/precompiled-drivers.html). |
 | `GPU_OPERATOR_BRANCH` | _auto-detected_ | Override the GPU operator git branch. If not set, defaults to `precompiled_lib_modules_mount` when `USE_PRECOMPILED=true`, otherwise `suse_lib_modules`. Only used when `USE_UPSTREAM_GPU_OPERATOR=false`. |
 | `GPU_OPERATOR_IMAGE` | _empty_ | Optional override for the GPU operator image. If set and `USE_UPSTREAM_GPU_OPERATOR=false`, this image will be mirrored to the in-cluster registry and used instead of building the operator from source. If `NEEDS_MIRROR=true`, the image is mirrored via the local system. |
+| `USE_HELM_PRIVATE_REGISTRY` | `false` | If `true`, enables the use of a private Helm registry for the GPU Operator chart. Can be overridden per target. |
+| `HELM_PRIVATE_URL` | _empty_ | **Global**: Base URL or full path to a private Helm chart for the GPU Operator. |
+| `NGC_API_KEY` | _empty_ | **Global**: API Key for NGC authentication when `HELM_PRIVATE_URL` is used. |
 
 ## Usage
 

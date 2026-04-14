@@ -35,3 +35,11 @@ INTERNAL_DRIVER_REGISTRY_15SP7=""  # e.g. "registry.example.com/nvidia/container
 
 # Default prebuilt driver repository for upgrade.sh
 DEFAULT_UPGRADE_DRIVER_REPOSITORY=""  # e.g. "registry.example.com/product/nvidia"
+
+# Private Helm repository for GPU Operator
+# If USE_HELM_PRIVATE_REGISTRY=true, the GPU Operator chart will be fetched from HELM_PRIVATE_URL
+# If HELM_PRIVATE_URL does not end in .tgz, the filename is assumed to be gpu-operator-${GPU_OPERATOR_VERSION}.tgz
+# USE_HELM_PRIVATE_REGISTRY can also be set per target (e.g. USE_HELM_PRIVATE_REGISTRY_16_0="true")
+USE_HELM_PRIVATE_REGISTRY="false"
+HELM_PRIVATE_URL="" # Global:  "https://helm.ngc.nvidia.com/nvidia"
+NGC_API_KEY=""      # Global: API Key for NGC authentication

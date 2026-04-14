@@ -36,6 +36,7 @@ USE_UPSTREAM_GPU_OPERATOR="${USE_UPSTREAM_GPU_OPERATOR:-false}"
 KERNEL_MODULE_TYPE="${KERNEL_MODULE_TYPE:-auto}"
 USE_PRECOMPILED="${USE_PRECOMPILED:-false}"
 GPU_OPERATOR_BRANCH="${GPU_OPERATOR_BRANCH:-}"  # Optional override for GPU operator branch
+GPU_OPERATOR_IMAGE="${GPU_OPERATOR_IMAGE:-}"  # Optional override for GPU operator image
 
 # Detect SLES version early for log filename
 echo "Detecting SLES version on remote host..."
@@ -263,6 +264,19 @@ if [ "$USE_PREBUILT_CONTAINER" != "false" ]; then
         DRIVER_REPOSITORY="$PREBUILT_DRIVER_REPOSITORY"
     fi
     echo "Using driver repository: $DRIVER_REPOSITORY"
+
+    # Mirror GPU operator image if needed
+    if [[ -n "$GPU_OPERATOR_IMAGE" && "$NEEDS_MIRROR" == "true" ]]; then
+        echo "Target needs mirroring and GPU_OPERATOR_IMAGE is set, mirroring via local system..."
+        if ! podman pull "$GPU_OPERATOR_IMAGE"; then
+            echo "Error: Failed to pull GPU operator image $GPU_OPERATOR_IMAGE"
+            exit 1
+        fi
+        if ! podman save "$GPU_OPERATOR_IMAGE" | ssh $TARGET_USER@$TARGET_HOST "podman load"; then
+            echo "Error: Failed to transfer GPU operator image to remote host"
+            exit 1
+        fi
+    fi
 else
     DRIVER_REPOSITORY="${REGISTRY_IP}:5000/nvidia"
 fi
@@ -272,6 +286,7 @@ if ! ssh $TARGET_USER@$TARGET_HOST \
   NVIDIA_DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" \
   GPU_OPERATOR_VERSION="$GPU_OPERATOR_VERSION" \
   GPU_OPERATOR_BRANCH="$GPU_OPERATOR_BRANCH" \
+  GPU_OPERATOR_IMAGE="$GPU_OPERATOR_IMAGE" \
   SLES="$SLES" \
   FINAL_REGISTRY_TAG="$FINAL_REGISTRY_TAG" \
   REGISTRY_IP="$REGISTRY_IP" \
@@ -370,53 +385,61 @@ else
 fi
 
 if [ "$USE_UPSTREAM_GPU_OPERATOR" != "true" ]; then
-  # Clone the gpu-operator container repo
-  # Determine which branch to use
-  if [ -n "$GPU_OPERATOR_BRANCH" ]; then
-    # User explicitly specified a branch
-    BRANCH="$GPU_OPERATOR_BRANCH"
-  elif [ "$USE_PRECOMPILED" == "true" ]; then
-    # Use precompiled branch when USE_PRECOMPILED=true
-    BRANCH=precompiled_lib_modules_mount
-  else
-    # Default branch
-    BRANCH=suse_lib_modules
-  fi
-  echo "Using GPU operator branch: $BRANCH"
-
-  if [ ! -d "$HOME/checkout/nvidia/gpu-operator" ]; then
-    mkdir -p ~/checkout/nvidia
-    cd ~/checkout/nvidia
-    if ! git clone -b $BRANCH https://github.com/fcrozat/gpu-operator.git; then
-      echo "Error: Failed to clone GPU operator repository with branch $BRANCH"
-      echo "The branch may not exist yet. Please specify GPU_OPERATOR_BRANCH or use USE_UPSTREAM_GPU_OPERATOR=true"
-      exit 1
+  if [ -n "$GPU_OPERATOR_IMAGE" ]; then
+    echo "Mirroring GPU operator image $GPU_OPERATOR_IMAGE to $REGISTRY_IP:5000/nvidia/cloud-native/gpu-operator:$GPU_OPERATOR_VERSION ..."
+    # If NEEDS_MIRROR is true, the image was already loaded by the local system.
+    if [[ "$NEEDS_MIRROR" != "true" ]]; then
+       podman pull "$GPU_OPERATOR_IMAGE"
     fi
-    cd gpu-operator
+    podman tag "$GPU_OPERATOR_IMAGE" "nvcr.io/nvidia/cloud-native/gpu-operator:$GPU_OPERATOR_VERSION"
   else
-    cd ~/checkout/nvidia/gpu-operator
-    # Fetch to ensure we have latest refs
-    git fetch origin
-    # Check if branch exists
-    if ! git rev-parse --verify origin/$BRANCH >/dev/null 2>&1; then
-      echo "Error: Branch $BRANCH does not exist in the repository"
-      echo "Available branches:"
-      git branch -r | grep -v HEAD
-      echo ""
-      echo "Solutions:"
-      echo "  1. Set GPU_OPERATOR_BRANCH to an existing branch"
-      echo "  2. Use USE_UPSTREAM_GPU_OPERATOR=true to skip custom operator build"
-      echo "  3. Create the $BRANCH branch in the repository"
-      exit 1
+    # Clone the gpu-operator container repo
+    # Determine which branch to use
+    if [ -n "$GPU_OPERATOR_BRANCH" ]; then
+      # User explicitly specified a branch
+      BRANCH="$GPU_OPERATOR_BRANCH"
+    elif [ "$USE_PRECOMPILED" == "true" ]; then
+      # Use precompiled branch when USE_PRECOMPILED=true
+      BRANCH=precompiled_lib_modules_mount
+    else
+      # Default branch
+      BRANCH=suse_lib_modules
     fi
-    git switch $BRANCH
-    git pull
+    echo "Using GPU operator branch: $BRANCH"
+
+    if [ ! -d "$HOME/checkout/nvidia/gpu-operator" ]; then
+      mkdir -p ~/checkout/nvidia
+      cd ~/checkout/nvidia
+      if ! git clone -b $BRANCH https://github.com/fcrozat/gpu-operator.git; then
+        echo "Error: Failed to clone GPU operator repository with branch $BRANCH"
+        echo "The branch may not exist yet. Please specify GPU_OPERATOR_BRANCH or use USE_UPSTREAM_GPU_OPERATOR=true"
+        exit 1
+      fi
+      cd gpu-operator
+    else
+      cd ~/checkout/nvidia/gpu-operator
+      # Fetch to ensure we have latest refs
+      git fetch origin
+      # Check if branch exists
+      if ! git rev-parse --verify origin/$BRANCH >/dev/null 2>&1; then
+        echo "Error: Branch $BRANCH does not exist in the repository"
+        echo "Available branches:"
+        git branch -r | grep -v HEAD
+        echo ""
+        echo "Solutions:"
+        echo "  1. Set GPU_OPERATOR_BRANCH to an existing branch"
+        echo "  2. Use USE_UPSTREAM_GPU_OPERATOR=true to skip custom operator build"
+        echo "  3. Create the $BRANCH branch in the repository"
+        exit 1
+      fi
+      git switch $BRANCH
+      git pull
+    fi
+
+    # Build the gpu-operator image
+    echo "Running: make DOCKER=podman DOCKER_BUILD_OPTIONS=\"--from registry.suse.com/bci/golang:1.25\" build-image"
+    make DOCKER=podman DOCKER_BUILD_OPTIONS="--from registry.suse.com/bci/golang:1.25"  build-image
   fi
-
-  # Build the gpu-operator image
-  echo "Running: make DOCKER=podman DOCKER_BUILD_OPTIONS=\"--from registry.suse.com/bci/golang:1.25\" build-image"
-  make DOCKER=podman DOCKER_BUILD_OPTIONS="--from registry.suse.com/bci/golang:1.25"  build-image
-
 
   # Push the image
   echo "Pushing image to in-cluster registry..."
@@ -727,8 +750,7 @@ driver:
   imagePullPolicy: Always
 
 operator:
-  repository: ${REGISTRY_IP}:5000
-  image: nvidia/cloud-native/gpu-operator
+  repository: ${REGISTRY_IP}:5000/nvidia/cloud-native
   imagePullPolicy: Always
 
 cdi:

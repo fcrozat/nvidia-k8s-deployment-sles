@@ -12,6 +12,20 @@ else
   exit 1
 fi
 
+# Parse arguments
+K3S_ONLY=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --k3s-only)
+      K3S_ONLY=true
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
 # Defaults (can be overridden by env vars)
 # TARGET_OS selects a host configuration from config.sh (e.g. 15.7, 16.0, onprem)
 TARGET_KEY="${TARGET_OS:-$DEFAULT_TARGET}"
@@ -31,6 +45,9 @@ fi
 TARGET_HOST="${TARGET_HOST:-${!host_var}}"
 TARGET_USER="${TARGET_USER:-${!user_var}}"
 K8S_DISTRO="${K8S_DISTRO:-${!distro_var}}"
+if [ "$K3S_ONLY" == "true" ]; then
+  K8S_DISTRO="k3s"
+fi
 NEEDS_MIRROR="${NEEDS_MIRROR:-${!mirror_var:-false}}"
 USE_PREBUILT_CONTAINER="${USE_PREBUILT_CONTAINER:-false}"
 USE_UPSTREAM_GPU_OPERATOR="${USE_UPSTREAM_GPU_OPERATOR:-false}"
@@ -138,6 +155,11 @@ sed -i "s/127.0.0.1/$TARGET_HOST/g" $KUBECONFIG_PATH
 sed -i 's/certificate-authority-data:.*/insecure-skip-tls-verify: true/g' $KUBECONFIG_PATH
 export KUBECONFIG=$KUBECONFIG_PATH
 echo "Kubeconfig saved to $KUBECONFIG"
+
+if [ "$K3S_ONLY" == "true" ]; then
+    echo "k3s setup complete (--k3s-only). Stopping here."
+    exit 0
+fi
 
 
 # --- Configure CoreDNS ---

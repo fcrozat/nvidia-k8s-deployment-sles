@@ -54,8 +54,8 @@ These environment variables can override config.sh values or control script beha
 | `K8S_DISTRO` | `K8S_DISTRO_<target>` from config.sh | Override the Kubernetes distribution. |
 | `NEEDS_MIRROR` | `NEEDS_MIRROR_<target>` from config.sh | Override the mirroring behavior (`true` or `false`). |
 | `DEPLOY_LOG` | `deploy-sles<VERSION>.log` | Path to the log file for the deployment output (auto-named with OS version). |
-| `NVIDIA_DRIVER_VERSION` | `580.126.09` | Version of the NVIDIA driver to build. |
-| `GPU_OPERATOR_VERSION` | `v25.10.1` | Version of the GPU Operator to install. |
+| `NVIDIA_DRIVER_VERSION` | `595.58.03` | Version of the NVIDIA driver to build. |
+| `GPU_OPERATOR_VERSION` | `v26.3.1` | Version of the GPU Operator to install. |
 | `DRIVER_CONTAINER_BRANCH` | `sles15-refresh` | Git branch to use for the driver container repository. |
 | `DRIVER_IMAGE_NAME` | `driver` | Name of the driver image to build and push. |
 | `DRIVER_REPOSITORY` | _auto-derived_ | Override the prebuilt driver repository location (used with `USE_PREBUILT_CONTAINER=true`). |

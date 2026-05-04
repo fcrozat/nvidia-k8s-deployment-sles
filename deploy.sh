@@ -14,10 +14,15 @@ fi
 
 # Parse arguments
 K3S_ONLY=false
+RKE2_ONLY=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --k3s-only)
       K3S_ONLY=true
+      shift
+      ;;
+    --rke2-only)
+      RKE2_ONLY=true
       shift
       ;;
     *)
@@ -47,6 +52,9 @@ TARGET_USER="${TARGET_USER:-${!user_var}}"
 K8S_DISTRO="${K8S_DISTRO:-${!distro_var}}"
 if [ "$K3S_ONLY" == "true" ]; then
   K8S_DISTRO="k3s"
+fi
+if [ "$RKE2_ONLY" == "true" ]; then
+  K8S_DISTRO="rke2"
 fi
 NEEDS_MIRROR="${NEEDS_MIRROR:-${!mirror_var:-false}}"
 USE_PREBUILT_CONTAINER="${USE_PREBUILT_CONTAINER:-false}"
@@ -119,7 +127,7 @@ if [ "$K8S_DISTRO" == "k3s" ]; then
     if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet k3s"; then
       echo "k3s not found or not active on remote host. Installing k3s..."
       # Use the official install script
-      ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.k3s.io | sh -"
+      ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.k3s.io | sudo sh -"
       echo "k3s installed."
     else
       echo "k3s is already installed and active on remote host."
@@ -129,7 +137,21 @@ if [ "$K8S_DISTRO" == "k3s" ]; then
     SERVICE_NAME="k3s"
     CONTAINERD_SOCKET="/run/k3s/containerd/containerd.sock"
 elif [ "$K8S_DISTRO" == "rke2" ]; then
-    echo "Using existing RKE2 instance..."
+    echo "Checking rke2 status on remote host..."
+    if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet rke2-server"; then
+      echo "rke2-server not found or not active on remote host. Installing rke2..."
+      ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.rke2.io | sudo sh -"
+      ssh $TARGET_USER@$TARGET_HOST "sudo systemctl enable rke2-server.service && sudo systemctl start rke2-server.service"
+      echo "rke2 installed and started. Waiting for it to be ready..."
+      # Wait for kubeconfig to be available
+      until ssh $TARGET_USER@$TARGET_HOST "sudo test -f /etc/rancher/rke2/rke2.yaml"; do
+        echo -n "."
+        sleep 5
+      done
+      echo -e "\nrke2 is ready."
+    else
+      echo "rke2 is already installed and active on remote host."
+    fi
     REMOTE_KUBECONFIG="/etc/rancher/rke2/rke2.yaml"
     REGISTRY_FILE="/etc/rancher/rke2/registries.yaml"
     SERVICE_NAME="rke2-server" # Assuming server node
@@ -156,8 +178,8 @@ sed -i 's/certificate-authority-data:.*/insecure-skip-tls-verify: true/g' $KUBEC
 export KUBECONFIG=$KUBECONFIG_PATH
 echo "Kubeconfig saved to $KUBECONFIG"
 
-if [ "$K3S_ONLY" == "true" ]; then
-    echo "k3s setup complete (--k3s-only). Stopping here."
+if [ "$K3S_ONLY" == "true" ] || [ "$RKE2_ONLY" == "true" ]; then
+    echo "$K8S_DISTRO setup complete. Stopping here."
     exit 0
 fi
 

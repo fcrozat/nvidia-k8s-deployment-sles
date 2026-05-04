@@ -98,13 +98,16 @@ TARGET_OS=16.0 ./deploy.sh
 TARGET_OS=onprem ./deploy.sh
 ```
 
-#### Only install k3s
-If you only want to install the K3s cluster and fetch the kubeconfig without deploying the GPU Operator, use the `--k3s-only` flag:
+#### Only install Kubernetes (k3s or rke2)
+If you only want to install the Kubernetes cluster (K3s or RKE2) and fetch the kubeconfig without deploying the GPU Operator, use the `--k3s-only` or `--rke2-only` flags:
 
 ```bash
 ./deploy.sh --k3s-only
+# OR
+./deploy.sh --rke2-only
 ```
-This will force `K8S_DISTRO=k3s`, install/start K3s on the target, fetch the kubeconfig locally, and then stop execution.
+
+This will force the respective `K8S_DISTRO`, install/start the cluster on the target, fetch the kubeconfig locally, and then stop execution.
 
 ### 3. Verify the installation
 

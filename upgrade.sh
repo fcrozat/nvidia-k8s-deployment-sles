@@ -34,7 +34,11 @@ if [ -z "$NVIDIA_DRIVER_VERSION" ]; then
     exit 1
 fi
 
-KUBECONFIG_PATH="$PWD/${K8S_DISTRO}.yaml"
+# Detect SLES version on remote host
+SLES=$(ssh "$TARGET_USER@$TARGET_HOST" 'source /etc/os-release && echo $VERSION_ID')
+echo "Detected SLES version on remote: $SLES"
+
+KUBECONFIG_PATH="$PWD/${K8S_DISTRO}-sles${SLES}.yaml"
 if [ ! -f "$KUBECONFIG_PATH" ]; then
     echo "Error: Kubeconfig not found at $KUBECONFIG_PATH. Please run deploy.sh first."
     exit 1
@@ -48,10 +52,6 @@ if [ -z "$REGISTRY_IP" ]; then
     exit 1
 fi
 echo "Local Registry found at: $REGISTRY_IP"
-
-# Detect SLES version on remote host
-SLES=$(ssh "$TARGET_USER@$TARGET_HOST" 'source /etc/os-release && echo $VERSION_ID')
-echo "Detected SLES version on remote: $SLES"
 
 # Detect kernel version if using precompiled drivers
 if [ "$USE_PRECOMPILED" == "true" ]; then

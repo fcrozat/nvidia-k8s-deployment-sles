@@ -1,4 +1,4 @@
-#!/bin/bash -x
+#!/bin/bash -ex
 #
 # need to configure ec2 instance with policy allowing kubectl remote control
 #

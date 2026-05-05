@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: local-registry
+---
+# registry.yaml
+
+# 1. Deployment
+# This runs the official registry:2 container.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docker-registry
+  namespace: local-registry
+  labels:
+    app: docker-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: docker-registry
+  template:
+    metadata:
+      labels:
+        app: docker-registry
+    spec:
+      containers:
+      - name: registry
+        image: registry.suse.com/suse/registry
+        ports:
+        - containerPort: 5000
+          protocol: TCP
+        volumeMounts:
+        - name: registry-storage
+          # Mount the host path inside the container at the registry's storage path
+          mountPath: /var/lib/registry
+      volumes:
+      - name: registry-storage
+        hostPath:
+          path: /var/lib/local-registry
+          type: DirectoryOrCreate
+
+---
+# 2. Service
+# This exposes the registry within the cluster via a ClusterIP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: docker-registry
+  namespace: local-registry
+  labels:
+    app: docker-registry
+spec:
+  type: ClusterIP
+  selector:
+    app: docker-registry
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 5000

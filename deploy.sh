@@ -140,7 +140,17 @@ elif [ "$K8S_DISTRO" == "rke2" ]; then
     echo "Checking rke2 status on remote host..."
     if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet rke2-server"; then
       echo "rke2-server not found or not active on remote host. Installing rke2..."
-      ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.rke2.io | sudo sh -"
+      # Determine installation method: default to tar for SLES 16.x because RPM packages might not be available
+      rke2_method="${INSTALL_RKE2_METHOD}"
+      if [ -z "$rke2_method" ] && [[ "$SLES" == 16.* ]]; then
+        rke2_method="tar"
+      fi
+      if [ -n "$rke2_method" ]; then
+        echo "Using RKE2 installation method: $rke2_method"
+        ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_METHOD=$rke2_method sh -"
+      else
+        ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.rke2.io | sudo sh -"
+      fi
       ssh $TARGET_USER@$TARGET_HOST "sudo systemctl enable rke2-server.service && sudo systemctl start rke2-server.service"
       echo "rke2 installed and started. Waiting for it to be ready..."
       # Wait for kubeconfig to be available

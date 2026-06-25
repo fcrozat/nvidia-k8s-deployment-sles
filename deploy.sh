@@ -122,13 +122,50 @@ EOF
 
 # --- Cluster Setup (K3s or RKE2) ---
 if [ "$K8S_DISTRO" == "k3s" ]; then
+    # Stop and disable RKE2 if it is deployed on the system
+    echo "Checking if rke2 is deployed on remote host..."
+    ssh $TARGET_USER@$TARGET_HOST "bash -s" << 'EOF'
+      rke2_found=false
+      for service in rke2-server rke2-agent; do
+        if systemctl list-unit-files "${service}.service" >/dev/null 2>&1 || [ -f "/etc/systemd/system/${service}.service" ] || [ -f "/usr/lib/systemd/system/${service}.service" ] || [ -f "/lib/systemd/system/${service}.service" ]; then
+          echo "rke2 is deployed (${service}). Stopping and disabling it..."
+          sudo systemctl stop "${service}" >/dev/null 2>&1 || true
+          sudo systemctl disable "${service}" >/dev/null 2>&1 || true
+          rke2_found=true
+        fi
+      done
+
+      if [ "$rke2_found" = true ]; then
+        killall_cmd=""
+        for path in /usr/local/bin/rke2-killall.sh /usr/bin/rke2-killall.sh /opt/rke2/bin/rke2-killall.sh /var/lib/rancher/rke2/bin/rke2-killall.sh; do
+          if [ -x "$path" ]; then
+            killall_cmd="$path"
+            break
+          fi
+        done
+        if [ -z "$killall_cmd" ] && command -v rke2-killall.sh >/dev/null 2>&1; then
+          killall_cmd=$(command -v rke2-killall.sh)
+        fi
+        if [ -n "$killall_cmd" ]; then
+          echo "Running $killall_cmd to clean up rke2..."
+          sudo "$killall_cmd" >/dev/null 2>&1 || true
+        fi
+      fi
+EOF
+
     echo "Checking k3s status on remote host..."
     # Check if k3s service is active on the remote machine
     if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet k3s"; then
       echo "k3s not found or not active on remote host. Installing k3s..."
       # Use the official install script
       ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.k3s.io | sudo sh -"
-      echo "k3s installed."
+      echo "k3s installed. Waiting for it to be ready..."
+      # Wait for kubeconfig to be available
+      until ssh $TARGET_USER@$TARGET_HOST "sudo test -f /etc/rancher/k3s/k3s.yaml"; do
+        echo -n "."
+        sleep 5
+      done
+      echo -e "\nk3s is ready."
     else
       echo "k3s is already installed and active on remote host."
     fi
@@ -137,6 +174,37 @@ if [ "$K8S_DISTRO" == "k3s" ]; then
     SERVICE_NAME="k3s"
     CONTAINERD_SOCKET="/run/k3s/containerd/containerd.sock"
 elif [ "$K8S_DISTRO" == "rke2" ]; then
+    # Stop and disable K3s if it is deployed on the system
+    echo "Checking if k3s is deployed on remote host..."
+    ssh $TARGET_USER@$TARGET_HOST "bash -s" << 'EOF'
+      k3s_found=false
+      for service in k3s k3s-agent; do
+        if systemctl list-unit-files "${service}.service" >/dev/null 2>&1 || [ -f "/etc/systemd/system/${service}.service" ] || [ -f "/usr/lib/systemd/system/${service}.service" ] || [ -f "/lib/systemd/system/${service}.service" ]; then
+          echo "k3s is deployed (${service}). Stopping and disabling it..."
+          sudo systemctl stop "${service}" >/dev/null 2>&1 || true
+          sudo systemctl disable "${service}" >/dev/null 2>&1 || true
+          k3s_found=true
+        fi
+      done
+
+      if [ "$k3s_found" = true ]; then
+        killall_cmd=""
+        for path in /usr/local/bin/k3s-killall.sh /usr/bin/k3s-killall.sh /opt/k3s/bin/k3s-killall.sh /var/lib/rancher/k3s/bin/k3s-killall.sh; do
+          if [ -x "$path" ]; then
+            killall_cmd="$path"
+            break
+          fi
+        done
+        if [ -z "$killall_cmd" ] && command -v k3s-killall.sh >/dev/null 2>&1; then
+          killall_cmd=$(command -v k3s-killall.sh)
+        fi
+        if [ -n "$killall_cmd" ]; then
+          echo "Running $killall_cmd to clean up k3s..."
+          sudo "$killall_cmd" >/dev/null 2>&1 || true
+        fi
+      fi
+EOF
+
     echo "Checking rke2 status on remote host..."
     if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet rke2-server"; then
       echo "rke2-server not found or not active on remote host. Installing rke2..."
@@ -207,6 +275,18 @@ data:
     hosts /etc/hosts
 EOF
 
+echo "Waiting for CoreDNS deployment to be created..."
+for i in {1..30}; do
+  if kubectl -n kube-system get deployment coredns >/dev/null 2>&1 || \
+     kubectl -n kube-system get deployment rke2-coredns-rke2-coredns >/dev/null 2>&1 || \
+     kubectl -n kube-system get deployment -l k8s-app=kube-dns >/dev/null 2>&1; then
+    break
+  fi
+  echo -n "."
+  sleep 2
+done
+echo ""
+
 echo "Restarting CoreDNS to apply the new configuration..."
 # Detect CoreDNS deployment name
 if kubectl -n kube-system get deployment coredns >/dev/null 2>&1; then
@@ -214,7 +294,7 @@ if kubectl -n kube-system get deployment coredns >/dev/null 2>&1; then
 elif kubectl -n kube-system get deployment rke2-coredns-rke2-coredns >/dev/null 2>&1; then
     COREDNS_DEPLOYMENT="rke2-coredns-rke2-coredns"
 else
-    COREDNS_DEPLOYMENT=$(kubectl -n kube-system get deployment -l k8s-app=kube-dns -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    COREDNS_DEPLOYMENT=$(kubectl -n kube-system get deployment -l k8s-app=kube-dns -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 fi
 
 if [ -n "$COREDNS_DEPLOYMENT" ]; then
@@ -242,7 +322,7 @@ fi
 echo "Registry ClusterIP: $REGISTRY_IP"
 
 # --- Configure K8s Node for insecure registry ---
-CONFIG_CHECK=$(ssh $TARGET_USER@$TARGET_HOST "grep -q '$REGISTRY_IP:5000' $REGISTRY_FILE 2>/dev/null && grep -q '$INTERNAL_REGISTRY' $REGISTRY_FILE 2>/dev/null && echo 'CONFIGURED'")
+CONFIG_CHECK=$(ssh $TARGET_USER@$TARGET_HOST "grep -q '$REGISTRY_IP:5000' $REGISTRY_FILE 2>/dev/null && grep -q '$INTERNAL_REGISTRY' $REGISTRY_FILE 2>/dev/null && echo 'CONFIGURED' || true")
 
 if [ "$CONFIG_CHECK" == "CONFIGURED" ]; then
     echo "Cluster already configured for insecure registry."

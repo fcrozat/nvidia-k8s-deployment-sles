@@ -52,6 +52,7 @@ These environment variables can override config.sh values or control script beha
 | `TARGET_HOST` | `HOST_<target>` from config.sh | Override the hostname or IP of the remote machine. |
 | `TARGET_USER` | `USER_<target>` from config.sh | Override the SSH user. |
 | `K8S_DISTRO` | `K8S_DISTRO_<target>` from config.sh | Override the Kubernetes distribution. |
+| `RKE2_NO_RPM` | `false` | If `true`, installs RKE2 from the tarball (`INSTALL_RKE2_METHOD=tar`) instead of the RPM package. Useful when RKE2 RPMs are not available for the target OS (e.g. SLES 16). |
 | `NEEDS_MIRROR` | `NEEDS_MIRROR_<target>` from config.sh | Override the mirroring behavior (`true` or `false`). |
 | `DEPLOY_LOG` | `deploy-sles<VERSION>.log` | Path to the log file for the deployment output (auto-named with OS version). |
 | `NVIDIA_DRIVER_VERSION` | `595.58.03` | Version of the NVIDIA driver to build. |

@@ -59,6 +59,7 @@ fi
 NEEDS_MIRROR="${NEEDS_MIRROR:-${!mirror_var:-false}}"
 USE_PREBUILT_CONTAINER="${USE_PREBUILT_CONTAINER:-false}"
 USE_UPSTREAM_GPU_OPERATOR="${USE_UPSTREAM_GPU_OPERATOR:-false}"
+RKE2_NO_RPM="${RKE2_NO_RPM:-false}"
 KERNEL_MODULE_TYPE="${KERNEL_MODULE_TYPE:-auto}"
 USE_PRECOMPILED="${USE_PRECOMPILED:-false}"
 GPU_OPERATOR_BRANCH="${GPU_OPERATOR_BRANCH:-}" # Optional override for GPU operator branch
@@ -217,7 +218,12 @@ EOF
   echo "Checking rke2 status on remote host..."
   if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet rke2-server"; then
     echo "rke2-server not found or not active on remote host. Installing rke2..."
-    ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.rke2.io | sudo sh -"
+    if [ "$RKE2_NO_RPM" == "true" ]; then
+      echo "Installing rke2 without RPM (tarball method)..."
+      ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_METHOD=tar sh -"
+    else
+      ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.rke2.io | sudo sh -"
+    fi
     ssh $TARGET_USER@$TARGET_HOST "sudo systemctl enable rke2-server.service && sudo systemctl start rke2-server.service"
     echo "rke2 installed and started. Waiting for it to be ready..."
     # Wait for kubeconfig to be available

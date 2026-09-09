@@ -5,6 +5,7 @@
 
 # Load private configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.sh
 if [ -f "$SCRIPT_DIR/config.sh" ]; then
   source "$SCRIPT_DIR/config.sh"
 else
@@ -280,7 +281,7 @@ data:
 EOF
 
 echo "Waiting for CoreDNS deployment to be created..."
-for i in {1..30}; do
+for _i in {1..30}; do
   if kubectl -n kube-system get deployment coredns >/dev/null 2>&1 ||
     kubectl -n kube-system get deployment rke2-coredns-rke2-coredns >/dev/null 2>&1 ||
     kubectl -n kube-system get deployment -l k8s-app=kube-dns >/dev/null 2>&1; then
@@ -760,7 +761,7 @@ patch_upstream_precompiled_driver_manifest() {
 }
 
 verify_upstream_precompiled_driver_override() {
-  local clusterpolicy_driver_enabled clusterpolicy_use_precompiled deployment_override_mount ds_name ds_mount_path ds_volume_path ds_update_strategy attempt
+  local clusterpolicy_driver_enabled clusterpolicy_use_precompiled deployment_override_mount ds_name ds_mount_path ds_volume_path ds_update_strategy
 
   clusterpolicy_driver_enabled=$(kubectl get clusterpolicies.nvidia.com/cluster-policy -o jsonpath='{.spec.driver.enabled}')
   if [ "$clusterpolicy_driver_enabled" != "true" ]; then
@@ -790,7 +791,7 @@ verify_upstream_precompiled_driver_override() {
     exit 1
   fi
 
-  for attempt in $(seq 1 60); do
+  for _attempt in $(seq 1 60); do
     ds_name=$(kubectl -n "$NAMESPACE" get daemonsets -o jsonpath='{.items[?(@.metadata.labels.app=="nvidia-driver-daemonset")].metadata.name}')
     if [ -n "$ds_name" ]; then
       break
@@ -946,8 +947,10 @@ helm install "${HELM_INSTALL_ARGS[@]}"
 # Function to compare versions (e.g. v26.3.1)
 # Returns 0 if $1 > $2, 1 otherwise
 version_gt() {
-  local v1=$(echo "$1" | sed 's/^v//')
-  local v2=$(echo "$2" | sed 's/^v//')
+  local v1
+  v1=$(echo "$1" | sed 's/^v//')
+  local v2
+  v2=$(echo "$2" | sed 's/^v//')
   [ "$v1" != "$v2" ] && [ "$(printf '%s\n' "$v1" "$v2" | sort -V | head -n1)" == "$v2" ]
 }
 

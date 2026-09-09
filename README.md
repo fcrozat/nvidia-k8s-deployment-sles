@@ -6,19 +6,19 @@ This repository provides a streamlined way to deploy the NVIDIA GPU Operator on 
 
 The `deploy.sh` script automates the following steps:
 
-1.  **Dependency Verification**: Checks for local (`kubectl`, `helm`) and remote (`podman`, etc.) dependencies. Removes `nvidia-container-toolkit` from the host if present (it conflicts with the GPU Operator).
-2.  **Cluster Management**: Detects or installs K3s/RKE2 on the target host.
-3.  **Local Access Configuration**: Fetches the remote `kubeconfig`, updates it with the target host address, and configures local `kubectl` access (with insecure TLS skip for ease of use).
-4.  **CoreDNS Tuning**: Configures CoreDNS to respect the host's `/etc/hosts`.
-5.  **In-Cluster Registry**: Deploys a private Docker registry within the cluster to host driver and operator images.
-6.  **Driver Image Setup**: Either builds the NVIDIA driver container on the remote host, or pulls a prebuilt image. If the target cannot reach the internal registry directly (`NEEDS_MIRROR=true`), images are mirrored via the local system.
-7.  **GPU Operator Installation**: Installs the NVIDIA GPU Operator via Helm, configured to use the local or prebuilt images.
+1. **Dependency Verification**: Checks for local (`kubectl`, `helm`) and remote (`podman`, etc.) dependencies. Removes `nvidia-container-toolkit` from the host if present (it conflicts with the GPU Operator).
+2. **Cluster Management**: Detects or installs K3s/RKE2 on the target host.
+3. **Local Access Configuration**: Fetches the remote `kubeconfig`, updates it with the target host address, and configures local `kubectl` access (with insecure TLS skip for ease of use).
+4. **CoreDNS Tuning**: Configures CoreDNS to respect the host's `/etc/hosts`.
+5. **In-Cluster Registry**: Deploys a private Docker registry within the cluster to host driver and operator images.
+6. **Driver Image Setup**: Either builds the NVIDIA driver container on the remote host, or pulls a prebuilt image. If the target cannot reach the internal registry directly (`NEEDS_MIRROR=true`), images are mirrored via the local system.
+7. **GPU Operator Installation**: Installs the NVIDIA GPU Operator via Helm, configured to use the local or prebuilt images.
 
 ## Prerequisites
 
-*   **Local Machine**: `kubectl`, `helm`, and `ssh` client.
-*   **Remote Host**: SLES 15 SP6/SP7 recommended. SSH access with sudo privileges.
-*   **Network**: Ensure security groups/firewalls allow SSH and Kubernetes API access (typically port 6443).
+* **Local Machine**: `kubectl`, `helm`, and `ssh` client.
+* **Remote Host**: SLES 15 SP6/SP7 recommended. SSH access with sudo privileges.
+* **Network**: Ensure security groups/firewalls allow SSH and Kubernetes API access (typically port 6443).
 
 ## Configuration
 
@@ -99,6 +99,7 @@ TARGET_OS=onprem ./deploy.sh
 ```
 
 #### Only install Kubernetes (k3s or rke2)
+
 If you only want to install the Kubernetes cluster (K3s or RKE2) and fetch the kubeconfig without deploying the GPU Operator, use the `--k3s-only` or `--rke2-only` flags:
 
 ```bash
@@ -140,8 +141,8 @@ TARGET_OS=16.0 NVIDIA_DRIVER_VERSION=580.126.09 ./upgrade.sh
 
 ## Files
 
-*   `config.sh.example`: Template for private configuration (hosts, registries, mirroring). Copy to `config.sh`.
-*   `deploy.sh`: The main deployment orchestration script.
-*   `upgrade.sh`: Script to mirror a specific NVIDIA driver version and patch the ClusterPolicy.
-*   `container-registry.yaml`: Manifest for the in-cluster Docker registry.
-*   `cuda-test.yaml`: A simple CUDA vectorAdd pod to verify GPU functionality.
+* `config.sh.example`: Template for private configuration (hosts, registries, mirroring). Copy to `config.sh`.
+* `deploy.sh`: The main deployment orchestration script.
+* `upgrade.sh`: Script to mirror a specific NVIDIA driver version and patch the ClusterPolicy.
+* `container-registry.yaml`: Manifest for the in-cluster Docker registry.
+* `cuda-test.yaml`: A simple CUDA vectorAdd pod to verify GPU functionality.

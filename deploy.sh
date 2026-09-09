@@ -17,24 +17,24 @@ K3S_ONLY=false
 RKE2_ONLY=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --k3s-only)
-      K3S_ONLY=true
-      shift
-      ;;
-    --rke2-only)
-      RKE2_ONLY=true
-      shift
-      ;;
-    *)
-      shift
-      ;;
+  --k3s-only)
+    K3S_ONLY=true
+    shift
+    ;;
+  --rke2-only)
+    RKE2_ONLY=true
+    shift
+    ;;
+  *)
+    shift
+    ;;
   esac
 done
 
 # Defaults (can be overridden by env vars)
 # TARGET_OS selects a host configuration from config.sh (e.g. 15.7, 16.0, onprem)
 TARGET_KEY="${TARGET_OS:-$DEFAULT_TARGET}"
-TARGET_KEY="${TARGET_KEY//./_}"  # Replace dots for valid variable names
+TARGET_KEY="${TARGET_KEY//./_}" # Replace dots for valid variable names
 
 host_var="HOST_${TARGET_KEY}"
 user_var="USER_${TARGET_KEY}"
@@ -61,8 +61,8 @@ USE_PREBUILT_CONTAINER="${USE_PREBUILT_CONTAINER:-false}"
 USE_UPSTREAM_GPU_OPERATOR="${USE_UPSTREAM_GPU_OPERATOR:-false}"
 KERNEL_MODULE_TYPE="${KERNEL_MODULE_TYPE:-auto}"
 USE_PRECOMPILED="${USE_PRECOMPILED:-false}"
-GPU_OPERATOR_BRANCH="${GPU_OPERATOR_BRANCH:-}"  # Optional override for GPU operator branch
-GPU_OPERATOR_IMAGE="${GPU_OPERATOR_IMAGE:-}"  # Optional override for GPU operator image
+GPU_OPERATOR_BRANCH="${GPU_OPERATOR_BRANCH:-}" # Optional override for GPU operator branch
+GPU_OPERATOR_IMAGE="${GPU_OPERATOR_IMAGE:-}"   # Optional override for GPU operator image
 
 # Handle private Helm registry settings
 USE_HELM_PRIVATE_REGISTRY="${USE_HELM_PRIVATE_REGISTRY:-${!helm_priv_reg_var:-false}}"
@@ -97,7 +97,7 @@ echo "Targeting: $TARGET_USER@$TARGET_HOST (Distro: $K8S_DISTRO)"
 
 # --- Local Dependency Checks ---
 for cmd in kubectl helm; do
-  if ! command -v $cmd > /dev/null 2>&1; then
+  if ! command -v $cmd >/dev/null 2>&1; then
     echo "Error: $cmd could not be found. Please install it."
     exit 1
   fi
@@ -105,7 +105,7 @@ done
 
 # --- Remote Dependency Checks ---
 # Install required packages on the remote host if they are not already present.
-ssh $TARGET_USER@$TARGET_HOST "bash -s" << 'EOF'
+ssh $TARGET_USER@$TARGET_HOST "bash -s" <<'EOF'
   for pkg in git-core podman make; do
     if ! rpm -q $pkg > /dev/null 2>&1; then
       echo "Installing remote package: $pkg"
@@ -122,9 +122,9 @@ EOF
 
 # --- Cluster Setup (K3s or RKE2) ---
 if [ "$K8S_DISTRO" == "k3s" ]; then
-    # Stop and disable RKE2 if it is deployed on the system
-    echo "Checking if rke2 is deployed on remote host..."
-    ssh $TARGET_USER@$TARGET_HOST "bash -s" << 'EOF'
+  # Stop and disable RKE2 if it is deployed on the system
+  echo "Checking if rke2 is deployed on remote host..."
+  ssh $TARGET_USER@$TARGET_HOST "bash -s" <<'EOF'
       rke2_found=false
       for service in rke2-server rke2-agent; do
         if systemctl list-unit-files "${service}.service" >/dev/null 2>&1 || [ -f "/etc/systemd/system/${service}.service" ] || [ -f "/usr/lib/systemd/system/${service}.service" ] || [ -f "/lib/systemd/system/${service}.service" ]; then
@@ -153,30 +153,30 @@ if [ "$K8S_DISTRO" == "k3s" ]; then
       fi
 EOF
 
-    echo "Checking k3s status on remote host..."
-    # Check if k3s service is active on the remote machine
-    if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet k3s"; then
-      echo "k3s not found or not active on remote host. Installing k3s..."
-      # Use the official install script
-      ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.k3s.io | sudo sh -"
-      echo "k3s installed. Waiting for it to be ready..."
-      # Wait for kubeconfig to be available
-      until ssh $TARGET_USER@$TARGET_HOST "sudo test -f /etc/rancher/k3s/k3s.yaml"; do
-        echo -n "."
-        sleep 5
-      done
-      echo -e "\nk3s is ready."
-    else
-      echo "k3s is already installed and active on remote host."
-    fi
-    REMOTE_KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
-    REGISTRY_FILE="/etc/rancher/k3s/registries.yaml"
-    SERVICE_NAME="k3s"
-    CONTAINERD_SOCKET="/run/k3s/containerd/containerd.sock"
+  echo "Checking k3s status on remote host..."
+  # Check if k3s service is active on the remote machine
+  if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet k3s"; then
+    echo "k3s not found or not active on remote host. Installing k3s..."
+    # Use the official install script
+    ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.k3s.io | sudo sh -"
+    echo "k3s installed. Waiting for it to be ready..."
+    # Wait for kubeconfig to be available
+    until ssh $TARGET_USER@$TARGET_HOST "sudo test -f /etc/rancher/k3s/k3s.yaml"; do
+      echo -n "."
+      sleep 5
+    done
+    echo -e "\nk3s is ready."
+  else
+    echo "k3s is already installed and active on remote host."
+  fi
+  REMOTE_KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
+  REGISTRY_FILE="/etc/rancher/k3s/registries.yaml"
+  SERVICE_NAME="k3s"
+  CONTAINERD_SOCKET="/run/k3s/containerd/containerd.sock"
 elif [ "$K8S_DISTRO" == "rke2" ]; then
-    # Stop and disable K3s if it is deployed on the system
-    echo "Checking if k3s is deployed on remote host..."
-    ssh $TARGET_USER@$TARGET_HOST "bash -s" << 'EOF'
+  # Stop and disable K3s if it is deployed on the system
+  echo "Checking if k3s is deployed on remote host..."
+  ssh $TARGET_USER@$TARGET_HOST "bash -s" <<'EOF'
       k3s_found=false
       for service in k3s k3s-agent; do
         if systemctl list-unit-files "${service}.service" >/dev/null 2>&1 || [ -f "/etc/systemd/system/${service}.service" ] || [ -f "/usr/lib/systemd/system/${service}.service" ] || [ -f "/lib/systemd/system/${service}.service" ]; then
@@ -205,29 +205,38 @@ elif [ "$K8S_DISTRO" == "rke2" ]; then
       fi
 EOF
 
-    echo "Checking rke2 status on remote host..."
-    if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet rke2-server"; then
-      echo "rke2-server not found or not active on remote host. Installing rke2..."
-      ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.rke2.io | sudo sh -"
-      ssh $TARGET_USER@$TARGET_HOST "sudo systemctl enable rke2-server.service && sudo systemctl start rke2-server.service"
-      echo "rke2 installed and started. Waiting for it to be ready..."
-      # Wait for kubeconfig to be available
-      until ssh $TARGET_USER@$TARGET_HOST "sudo test -f /etc/rancher/rke2/rke2.yaml"; do
-        echo -n "."
-        sleep 5
-      done
-      echo -e "\nrke2 is ready."
-    else
-      echo "rke2 is already installed and active on remote host."
-    fi
-    REMOTE_KUBECONFIG="/etc/rancher/rke2/rke2.yaml"
-    REGISTRY_FILE="/etc/rancher/rke2/registries.yaml"
-    SERVICE_NAME="rke2-server" # Assuming server node
-    # RKE2 usually uses this socket path as well (symlinked or direct)
-    CONTAINERD_SOCKET="/run/k3s/containerd/containerd.sock"
+  # Remove k3s-selinux RPM if present (conflicts with rke2)
+  echo "Removing k3s-selinux RPM if present..."
+  ssh $TARGET_USER@$TARGET_HOST "bash -s" <<'EOF'
+      if rpm -q k3s-selinux > /dev/null 2>&1; then
+        echo "Removing k3s-selinux (conflicts with rke2)..."
+        sudo zypper rm -y k3s-selinux
+      fi
+EOF
+
+  echo "Checking rke2 status on remote host..."
+  if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet rke2-server"; then
+    echo "rke2-server not found or not active on remote host. Installing rke2..."
+    ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.rke2.io | sudo sh -"
+    ssh $TARGET_USER@$TARGET_HOST "sudo systemctl enable rke2-server.service && sudo systemctl start rke2-server.service"
+    echo "rke2 installed and started. Waiting for it to be ready..."
+    # Wait for kubeconfig to be available
+    until ssh $TARGET_USER@$TARGET_HOST "sudo test -f /etc/rancher/rke2/rke2.yaml"; do
+      echo -n "."
+      sleep 5
+    done
+    echo -e "\nrke2 is ready."
+  else
+    echo "rke2 is already installed and active on remote host."
+  fi
+  REMOTE_KUBECONFIG="/etc/rancher/rke2/rke2.yaml"
+  REGISTRY_FILE="/etc/rancher/rke2/registries.yaml"
+  SERVICE_NAME="rke2-server" # Assuming server node
+  # RKE2 usually uses this socket path as well (symlinked or direct)
+  CONTAINERD_SOCKET="/run/k3s/containerd/containerd.sock"
 else
-    echo "Unknown K8S_DISTRO: $K8S_DISTRO"
-    exit 1
+  echo "Unknown K8S_DISTRO: $K8S_DISTRO"
+  exit 1
 fi
 
 # SLES version was already detected at the beginning of the script
@@ -235,10 +244,10 @@ fi
 # Fetch the kubeconfig from the remote node and update it for local access
 KUBECONFIG_PATH="$PWD/${K8S_DISTRO}-sles${SLES}.yaml"
 echo "Fetching kubeconfig from remote host..."
-ssh $TARGET_USER@$TARGET_HOST "sudo cat $REMOTE_KUBECONFIG" > $KUBECONFIG_PATH
+ssh $TARGET_USER@$TARGET_HOST "sudo cat $REMOTE_KUBECONFIG" >$KUBECONFIG_PATH
 if [ $? -ne 0 ]; then
-    echo "Failed to fetch kubeconfig from remote host."
-    exit 1
+  echo "Failed to fetch kubeconfig from remote host."
+  exit 1
 fi
 sed -i "s/127.0.0.1/$TARGET_HOST/g" $KUBECONFIG_PATH
 # Configure insecure-skip-tls-verify since the hostname won't match the cert
@@ -247,10 +256,9 @@ export KUBECONFIG=$KUBECONFIG_PATH
 echo "Kubeconfig saved to $KUBECONFIG"
 
 if [ "$K3S_ONLY" == "true" ] || [ "$RKE2_ONLY" == "true" ]; then
-    echo "$K8S_DISTRO setup complete. Stopping here."
-    exit 0
+  echo "$K8S_DISTRO setup complete. Stopping here."
+  exit 0
 fi
-
 
 # --- Configure CoreDNS ---
 echo "Configuring CoreDNS to use /etc/hosts from the instance..."
@@ -267,9 +275,9 @@ EOF
 
 echo "Waiting for CoreDNS deployment to be created..."
 for i in {1..30}; do
-  if kubectl -n kube-system get deployment coredns >/dev/null 2>&1 || \
-     kubectl -n kube-system get deployment rke2-coredns-rke2-coredns >/dev/null 2>&1 || \
-     kubectl -n kube-system get deployment -l k8s-app=kube-dns >/dev/null 2>&1; then
+  if kubectl -n kube-system get deployment coredns >/dev/null 2>&1 ||
+    kubectl -n kube-system get deployment rke2-coredns-rke2-coredns >/dev/null 2>&1 ||
+    kubectl -n kube-system get deployment -l k8s-app=kube-dns >/dev/null 2>&1; then
     break
   fi
   echo -n "."
@@ -280,20 +288,19 @@ echo ""
 echo "Restarting CoreDNS to apply the new configuration..."
 # Detect CoreDNS deployment name
 if kubectl -n kube-system get deployment coredns >/dev/null 2>&1; then
-    COREDNS_DEPLOYMENT="coredns"
+  COREDNS_DEPLOYMENT="coredns"
 elif kubectl -n kube-system get deployment rke2-coredns-rke2-coredns >/dev/null 2>&1; then
-    COREDNS_DEPLOYMENT="rke2-coredns-rke2-coredns"
+  COREDNS_DEPLOYMENT="rke2-coredns-rke2-coredns"
 else
-    COREDNS_DEPLOYMENT=$(kubectl -n kube-system get deployment -l k8s-app=kube-dns -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  COREDNS_DEPLOYMENT=$(kubectl -n kube-system get deployment -l k8s-app=kube-dns -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 fi
 
 if [ -n "$COREDNS_DEPLOYMENT" ]; then
-    kubectl -n kube-system rollout restart deployment $COREDNS_DEPLOYMENT
-    kubectl -n kube-system rollout status deployment/$COREDNS_DEPLOYMENT --timeout=5m
+  kubectl -n kube-system rollout restart deployment $COREDNS_DEPLOYMENT
+  kubectl -n kube-system rollout status deployment/$COREDNS_DEPLOYMENT --timeout=5m
 else
-    echo "Warning: Could not find CoreDNS deployment. Skipping restart."
+  echo "Warning: Could not find CoreDNS deployment. Skipping restart."
 fi
-
 
 # --- In-Cluster Registry Setup ---
 kubectl config use-context default
@@ -306,8 +313,8 @@ kubectl -n local-registry rollout status deployment/docker-registry --timeout=5m
 # Get the ClusterIP of the registry service.
 REGISTRY_IP=$(kubectl -n local-registry get service docker-registry -o jsonpath='{.spec.clusterIP}')
 if [ -z "$REGISTRY_IP" ]; then
-    echo "Failed to get registry ClusterIP"
-    exit 1
+  echo "Failed to get registry ClusterIP"
+  exit 1
 fi
 echo "Registry ClusterIP: $REGISTRY_IP"
 
@@ -315,10 +322,10 @@ echo "Registry ClusterIP: $REGISTRY_IP"
 CONFIG_CHECK=$(ssh $TARGET_USER@$TARGET_HOST "grep -q '$REGISTRY_IP:5000' $REGISTRY_FILE 2>/dev/null && grep -q '$INTERNAL_REGISTRY' $REGISTRY_FILE 2>/dev/null && echo 'CONFIGURED' || true")
 
 if [ "$CONFIG_CHECK" == "CONFIGURED" ]; then
-    echo "Cluster already configured for insecure registry."
+  echo "Cluster already configured for insecure registry."
 else
-    echo "Configuring node to trust the insecure registry..."
-    ssh $TARGET_USER@$TARGET_HOST "bash -s" << EOF
+  echo "Configuring node to trust the insecure registry..."
+  ssh $TARGET_USER@$TARGET_HOST "bash -s" <<EOF
 set -e
 # Ensure dir exists (likely already does)
 sudo mkdir -p $(dirname $REGISTRY_FILE)
@@ -339,15 +346,14 @@ echo "Restarting service $SERVICE_NAME to apply registry configuration..."
 sudo systemctl restart $SERVICE_NAME
 EOF
 
-    # Wait for the cluster to become ready again
-    echo "Waiting for Kubernetes API to be ready after restart..."
-    until kubectl get nodes &> /dev/null; do
-      echo -n "."
-      sleep 5
-    done
-    echo -e "\nKubernetes API is ready."
+  # Wait for the cluster to become ready again
+  echo "Waiting for Kubernetes API to be ready after restart..."
+  until kubectl get nodes &>/dev/null; do
+    echo -n "."
+    sleep 5
+  done
+  echo -e "\nKubernetes API is ready."
 fi
-
 
 # --- Remote Container Build and Push ---
 NVIDIA_DRIVER_VERSION="${NVIDIA_DRIVER_VERSION:-595.58.03}"
@@ -365,49 +371,49 @@ else
 fi
 
 if [ "$USE_PREBUILT_CONTAINER" != "false" ]; then
-    if [ "$USE_PREBUILT_CONTAINER" == "production" ]; then
-        PREBUILT_DRIVER_REPOSITORY="registry.suse.com/third-party/nvidia"
+  if [ "$USE_PREBUILT_CONTAINER" == "production" ]; then
+    PREBUILT_DRIVER_REPOSITORY="registry.suse.com/third-party/nvidia"
+  else
+    if [[ "$SLES" == "15.6" ]]; then
+      DEFAULT_INTERNAL_REGISTRY="$INTERNAL_DRIVER_REGISTRY_15SP6"
     else
-        if [[ "$SLES" == "15.6" ]]; then
-            DEFAULT_INTERNAL_REGISTRY="$INTERNAL_DRIVER_REGISTRY_15SP6"
-        else
-            DEFAULT_INTERNAL_REGISTRY="$INTERNAL_DRIVER_REGISTRY_15SP7"
-        fi
-        PREBUILT_DRIVER_REPOSITORY=${DRIVER_REPOSITORY:-"$DEFAULT_INTERNAL_REGISTRY"}
+      DEFAULT_INTERNAL_REGISTRY="$INTERNAL_DRIVER_REGISTRY_15SP7"
     fi
-    PREBUILT_DRIVER_IMAGE="${PREBUILT_DRIVER_REPOSITORY}/${DRIVER_IMAGE_NAME}:${FINAL_REGISTRY_TAG}"
+    PREBUILT_DRIVER_REPOSITORY=${DRIVER_REPOSITORY:-"$DEFAULT_INTERNAL_REGISTRY"}
+  fi
+  PREBUILT_DRIVER_IMAGE="${PREBUILT_DRIVER_REPOSITORY}/${DRIVER_IMAGE_NAME}:${FINAL_REGISTRY_TAG}"
 
-    # Mirror if target cannot reach internal registry directly
-    if [[ "$NEEDS_MIRROR" == "true" && "$USE_PREBUILT_CONTAINER" != "production" && "$PREBUILT_DRIVER_REPOSITORY" == *"$INTERNAL_REGISTRY"* ]]; then
-        echo "Target needs mirroring and fetching from $INTERNAL_REGISTRY, mirroring prebuilt image via local system..."
-        DRIVER_REPOSITORY="${REGISTRY_IP}:5000/nvidia"
-        if ! podman pull "$PREBUILT_DRIVER_IMAGE"; then
-            echo "Error: Failed to pull prebuilt driver image $PREBUILT_DRIVER_IMAGE"
-            exit 1
-        fi
-        if ! podman save "$PREBUILT_DRIVER_IMAGE" | ssh $TARGET_USER@$TARGET_HOST "podman load"; then
-            echo "Error: Failed to transfer prebuilt driver image to remote host"
-            exit 1
-        fi
-    else
-        DRIVER_REPOSITORY="$PREBUILT_DRIVER_REPOSITORY"
-    fi
-    echo "Using driver repository: $DRIVER_REPOSITORY"
-
-    # Mirror GPU operator image if needed
-    if [[ -n "$GPU_OPERATOR_IMAGE" && "$NEEDS_MIRROR" == "true" ]]; then
-        echo "Target needs mirroring and GPU_OPERATOR_IMAGE is set, mirroring via local system..."
-        if ! podman pull "$GPU_OPERATOR_IMAGE"; then
-            echo "Error: Failed to pull GPU operator image $GPU_OPERATOR_IMAGE"
-            exit 1
-        fi
-        if ! podman save "$GPU_OPERATOR_IMAGE" | ssh $TARGET_USER@$TARGET_HOST "podman load"; then
-            echo "Error: Failed to transfer GPU operator image to remote host"
-            exit 1
-        fi
-    fi
-else
+  # Mirror if target cannot reach internal registry directly
+  if [[ "$NEEDS_MIRROR" == "true" && "$USE_PREBUILT_CONTAINER" != "production" && "$PREBUILT_DRIVER_REPOSITORY" == *"$INTERNAL_REGISTRY"* ]]; then
+    echo "Target needs mirroring and fetching from $INTERNAL_REGISTRY, mirroring prebuilt image via local system..."
     DRIVER_REPOSITORY="${REGISTRY_IP}:5000/nvidia"
+    if ! podman pull "$PREBUILT_DRIVER_IMAGE"; then
+      echo "Error: Failed to pull prebuilt driver image $PREBUILT_DRIVER_IMAGE"
+      exit 1
+    fi
+    if ! podman save "$PREBUILT_DRIVER_IMAGE" | ssh $TARGET_USER@$TARGET_HOST "podman load"; then
+      echo "Error: Failed to transfer prebuilt driver image to remote host"
+      exit 1
+    fi
+  else
+    DRIVER_REPOSITORY="$PREBUILT_DRIVER_REPOSITORY"
+  fi
+  echo "Using driver repository: $DRIVER_REPOSITORY"
+
+  # Mirror GPU operator image if needed
+  if [[ -n "$GPU_OPERATOR_IMAGE" && "$NEEDS_MIRROR" == "true" ]]; then
+    echo "Target needs mirroring and GPU_OPERATOR_IMAGE is set, mirroring via local system..."
+    if ! podman pull "$GPU_OPERATOR_IMAGE"; then
+      echo "Error: Failed to pull GPU operator image $GPU_OPERATOR_IMAGE"
+      exit 1
+    fi
+    if ! podman save "$GPU_OPERATOR_IMAGE" | ssh $TARGET_USER@$TARGET_HOST "podman load"; then
+      echo "Error: Failed to transfer GPU operator image to remote host"
+      exit 1
+    fi
+  fi
+else
+  DRIVER_REPOSITORY="${REGISTRY_IP}:5000/nvidia"
 fi
 
 echo "Building and pushing container on remote host..."
@@ -428,7 +434,7 @@ if ! ssh $TARGET_USER@$TARGET_HOST \
   INTERNAL_REGISTRY="$INTERNAL_REGISTRY" \
   PREBUILT_DRIVER_IMAGE="$PREBUILT_DRIVER_IMAGE" \
   PREBUILT_DRIVER_REPOSITORY="$PREBUILT_DRIVER_REPOSITORY" \
-  'bash -s' << 'EOF'
+  'bash -s' <<'EOF'
 set -e
 
 # Derive major driver branch from version (e.g. 580.126.09 -> 580)
@@ -579,8 +585,8 @@ fi
 
 EOF
 then
-    echo "Remote build and push failed."
-    exit 1
+  echo "Remote build and push failed."
+  exit 1
 fi
 
 # --- Local Helm Install ---
@@ -611,7 +617,7 @@ patch_upstream_precompiled_driver_manifest() {
   override_dir=$(mktemp -d)
   override_file="$override_dir/0500_daemonset.yaml"
 
-  if ! kubectl -n "$NAMESPACE" exec "$operator_pod" -- cat "$state_driver_manifest_path" > "$override_file"; then
+  if ! kubectl -n "$NAMESPACE" exec "$operator_pod" -- cat "$state_driver_manifest_path" >"$override_file"; then
     echo "Error: Failed to extract $state_driver_manifest_path from the gpu-operator pod."
     rm -rf "$override_dir"
     exit 1
@@ -696,7 +702,7 @@ patch_upstream_precompiled_driver_manifest() {
           exit 1
         }
       }
-    ' "$override_file" > "$patched_file"; then
+    ' "$override_file" >"$patched_file"; then
       echo "Error: Failed to patch the upstream state-driver manifest with the /lib/modules mount."
       rm -rf "$override_dir"
       exit 1
@@ -765,7 +771,7 @@ verify_upstream_precompiled_driver_override() {
     exit 1
   fi
 
-  if ! kubectl -n "$NAMESPACE" get configmap gpu-operator-state-driver-override > /dev/null 2>&1; then
+  if ! kubectl -n "$NAMESPACE" get configmap gpu-operator-state-driver-override >/dev/null 2>&1; then
     echo "Error: ConfigMap gpu-operator-state-driver-override was not created."
     exit 1
   fi
@@ -815,7 +821,7 @@ echo "Deleting namespace '$NAMESPACE'..."
 kubectl delete namespace $NAMESPACE --ignore-not-found=true
 
 echo "Waiting for namespace '$NAMESPACE' to terminate..."
-while kubectl get namespace $NAMESPACE > /dev/null 2>&1; do
+while kubectl get namespace $NAMESPACE >/dev/null 2>&1; do
   echo -n "."
   sleep 2
 done
@@ -837,9 +843,9 @@ if [ "$USE_HELM_PRIVATE_REGISTRY" == "true" ]; then
 
   # Construct full URL if it's just a base path
   if [[ "$HELM_PRIVATE_URL" != *.tgz ]]; then
-      FULL_HELM_URL="${HELM_PRIVATE_URL%/}/gpu-operator-${GPU_OPERATOR_VERSION}.tgz"
+    FULL_HELM_URL="${HELM_PRIVATE_URL%/}/gpu-operator-${GPU_OPERATOR_VERSION}.tgz"
   else
-      FULL_HELM_URL="$HELM_PRIVATE_URL"
+    FULL_HELM_URL="$HELM_PRIVATE_URL"
   fi
 
   echo "Fetching GPU Operator chart from URL: $FULL_HELM_URL"
@@ -874,7 +880,7 @@ fi
 
 if [ "$USE_UPSTREAM_GPU_OPERATOR" == "true" ]; then
   # When using upstream, don't override operator settings
-  cat << EOF > gpu-operator-values.yaml
+  cat <<EOF >gpu-operator-values.yaml
 driver:
   enabled: ${INITIAL_DRIVER_ENABLED}
   version: ${HELM_DRIVER_VERSION}
@@ -896,7 +902,7 @@ toolkit:
 EOF
 else
   # When using patched operator, specify custom operator settings
-  cat << EOF > gpu-operator-values.yaml
+  cat <<EOF >gpu-operator-values.yaml
 driver:
   enabled: ${INITIAL_DRIVER_ENABLED}
   version: ${HELM_DRIVER_VERSION}
@@ -924,7 +930,7 @@ fi
 
 HELM_INSTALL_ARGS=("$RELEASE_NAME" "$HELM_CHART" "-n" "$NAMESPACE" "--create-namespace" "-f" "gpu-operator-values.yaml")
 if [ "$USE_HELM_PRIVATE_REGISTRY" != "true" ]; then
-    HELM_INSTALL_ARGS+=("--version" "$GPU_OPERATOR_VERSION")
+  HELM_INSTALL_ARGS+=("--version" "$GPU_OPERATOR_VERSION")
 fi
 
 helm install "${HELM_INSTALL_ARGS[@]}"
@@ -932,9 +938,9 @@ helm install "${HELM_INSTALL_ARGS[@]}"
 # Function to compare versions (e.g. v26.3.1)
 # Returns 0 if $1 > $2, 1 otherwise
 version_gt() {
-    local v1=$(echo "$1" | sed 's/^v//')
-    local v2=$(echo "$2" | sed 's/^v//')
-    [ "$v1" != "$v2" ] && [ "$(printf '%s\n' "$v1" "$v2" | sort -V | head -n1)" == "$v2" ]
+  local v1=$(echo "$1" | sed 's/^v//')
+  local v2=$(echo "$2" | sed 's/^v//')
+  [ "$v1" != "$v2" ] && [ "$(printf '%s\n' "$v1" "$v2" | sort -V | head -n1)" == "$v2" ]
 }
 
 if [ "$USE_UPSTREAM_GPU_OPERATOR" == "true" ]; then

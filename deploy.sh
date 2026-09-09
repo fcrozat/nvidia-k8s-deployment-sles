@@ -251,8 +251,8 @@ fi
 # Fetch the kubeconfig from the remote node and update it for local access
 KUBECONFIG_PATH="$PWD/${K8S_DISTRO}-sles${SLES}.yaml"
 echo "Fetching kubeconfig from remote host..."
-ssh $TARGET_USER@$TARGET_HOST "sudo cat $REMOTE_KUBECONFIG" >$KUBECONFIG_PATH
-if [ $? -ne 0 ]; then
+# shellcheck disable=SC2029
+if ! ssh $TARGET_USER@$TARGET_HOST "sudo cat $REMOTE_KUBECONFIG" >$KUBECONFIG_PATH; then
   echo "Failed to fetch kubeconfig from remote host."
   exit 1
 fi
@@ -326,12 +326,14 @@ fi
 echo "Registry ClusterIP: $REGISTRY_IP"
 
 # --- Configure K8s Node for insecure registry ---
+# shellcheck disable=SC2029
 CONFIG_CHECK=$(ssh $TARGET_USER@$TARGET_HOST "grep -q '$REGISTRY_IP:5000' $REGISTRY_FILE 2>/dev/null && grep -q '$INTERNAL_REGISTRY' $REGISTRY_FILE 2>/dev/null && echo 'CONFIGURED' || true")
 
 if [ "$CONFIG_CHECK" == "CONFIGURED" ]; then
   echo "Cluster already configured for insecure registry."
 else
   echo "Configuring node to trust the insecure registry..."
+  # shellcheck disable=SC2087
   ssh $TARGET_USER@$TARGET_HOST "bash -s" <<EOF
 set -e
 # Ensure dir exists (likely already does)
@@ -859,6 +861,7 @@ if [ "$USE_HELM_PRIVATE_REGISTRY" == "true" ]; then
 
   echo "Fetching GPU Operator chart from URL: $FULL_HELM_URL"
   # Fetch the chart locally
+  # shellcheck disable=SC2016
   if ! helm fetch "$FULL_HELM_URL" --username='$oauthtoken' --password="$NGC_API_KEY"; then
     echo "Error: Failed to fetch Helm chart from $FULL_HELM_URL"
     exit 1
@@ -948,9 +951,9 @@ helm install "${HELM_INSTALL_ARGS[@]}"
 # Returns 0 if $1 > $2, 1 otherwise
 version_gt() {
   local v1
-  v1=$(echo "$1" | sed 's/^v//')
+  v1="${1#v}"
   local v2
-  v2=$(echo "$2" | sed 's/^v//')
+  v2="${2#v}"
   [ "$v1" != "$v2" ] && [ "$(printf '%s\n' "$v1" "$v2" | sort -V | head -n1)" == "$v2" ]
 }
 

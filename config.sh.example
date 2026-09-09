@@ -1,6 +1,9 @@
+#!/bin/bash
 # config.sh - Private configuration for deploy.sh and upgrade.sh
 # Copy this file to config.sh and fill in your values.
 # config.sh is gitignored and should NOT be committed.
+# shellcheck disable=SC2034
+# All variables in this file are consumed by deploy.sh and upgrade.sh.
 
 # Per-target host configurations
 # Each target defined by TARGET_OS needs: HOST_<target>, USER_<target>, K8S_DISTRO_<target>

@@ -155,6 +155,15 @@ if [ "$K8S_DISTRO" == "k3s" ]; then
       fi
 EOF
 
+  # Remove rke2-selinux RPM if present (conflicts with k3s-selinux)
+  echo "Removing rke2-selinux RPM if present..."
+  ssh $TARGET_USER@$TARGET_HOST "bash -s" <<'EOF'
+      if rpm -q rke2-selinux > /dev/null 2>&1; then
+        echo "Removing rke2-selinux (conflicts with k3s-selinux)..."
+        sudo zypper rm -y rke2-selinux
+      fi
+EOF
+
   echo "Checking k3s status on remote host..."
   # Check if k3s service is active on the remote machine
   if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet k3s"; then

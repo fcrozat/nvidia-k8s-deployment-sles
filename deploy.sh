@@ -108,6 +108,7 @@ done
 # --- Remote Dependency Checks ---
 # Install required packages on the remote host if they are not already present.
 ssh $TARGET_USER@$TARGET_HOST "bash -s" <<'EOF'
+  sudo zypper --non-interactive refresh || true
   for pkg in git-core podman make; do
     if ! rpm -q $pkg > /dev/null 2>&1; then
       echo "Installing remote package: $pkg"
@@ -169,7 +170,14 @@ EOF
   if ! ssh $TARGET_USER@$TARGET_HOST "sudo systemctl is-active --quiet k3s"; then
     echo "k3s not found or not active on remote host. Installing k3s..."
     # Use the official install script
-    ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.k3s.io | sudo sh -"
+    # Refresh repositories first so stale metadata doesn't cause 404s on package downloads
+    ssh $TARGET_USER@$TARGET_HOST "sudo zypper --non-interactive refresh" || true
+    if ! ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.k3s.io | sudo sh -"; then
+      # The k3s install script adds its own repo; refresh it and retry once
+      echo "k3s install failed. Refreshing repositories and retrying..."
+      ssh $TARGET_USER@$TARGET_HOST "sudo zypper --non-interactive refresh -f" || true
+      ssh $TARGET_USER@$TARGET_HOST "curl -sfL https://get.k3s.io | sudo sh -"
+    fi
     echo "k3s installed. Waiting for it to be ready..."
     # Wait for kubeconfig to be available
     until ssh $TARGET_USER@$TARGET_HOST "sudo test -f /etc/rancher/k3s/k3s.yaml"; do

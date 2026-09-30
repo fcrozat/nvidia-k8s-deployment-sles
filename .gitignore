@@ -4,3 +4,8 @@ kubeconfig
 !cuda-test.yaml
 *.log
 config.sh
+*.esl
+*.crt
+*.der
+*.pem
+aws_binary_blob.bin

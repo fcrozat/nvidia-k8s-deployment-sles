@@ -123,6 +123,22 @@ ssh $TARGET_USER@$TARGET_HOST "bash -s" <<'EOF'
   fi
 EOF
 
+# get.k3s.io runs "semodule -r k3s" and then treats an already installed k3s-selinux
+# RPM as a no-op, which leaves k3s running without its SELinux policy. Load the
+# module from the .pp that RPM already ships - no download, no forced reinstall.
+# shellcheck disable=SC2029
+ensure_k3s_selinux_module() {
+  ssh $TARGET_USER@$TARGET_HOST "bash -s" <<'EOF'
+      rpm -q k3s-selinux > /dev/null 2>&1 || exit 0
+      sudo semodule -l 2>/dev/null | grep -q '^k3s' && exit 0
+      pp="$(rpm -ql k3s-selinux | grep '\.pp$' | head -1)"
+      if [ -n "$pp" ]; then
+        echo "Loading k3s SELinux module from $pp..."
+        sudo semodule -i "$pp"
+      fi
+EOF
+}
+
 # --- Cluster Setup (K3s or RKE2) ---
 if [ "$K8S_DISTRO" == "k3s" ]; then
   # Stop and disable RKE2 if it is deployed on the system
@@ -163,6 +179,14 @@ EOF
         echo "Removing rke2-selinux (conflicts with k3s-selinux)..."
         sudo zypper rm -y rke2-selinux
       fi
+      # The rke2 SELinux module can remain loaded after the RPM is removed and
+      # conflicts with the k3s one ("Conflicting name type transition rules", which
+      # makes the k3s-selinux %posttrans semodule load fail). semodule -l prints
+      # "<name> <version>", so match on the name only.
+      if sudo semodule -l 2>/dev/null | grep -q '^rke2'; then
+        echo "Removing leftover rke2 SELinux module..."
+        sudo semodule -r rke2
+      fi
 EOF
 
   echo "Checking k3s status on remote host..."
@@ -188,6 +212,7 @@ EOF
   else
     echo "k3s is already installed and active on remote host."
   fi
+  ensure_k3s_selinux_module
   REMOTE_KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
   REGISTRY_FILE="/etc/rancher/k3s/registries.yaml"
   SERVICE_NAME="k3s"

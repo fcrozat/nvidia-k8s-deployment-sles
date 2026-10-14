@@ -19,6 +19,11 @@ USER_16_0="ec2-user"
 K8S_DISTRO_16_0="k3s"
 NEEDS_MIRROR_16_0="true"
 
+HOST_16_1=""              # e.g. "my-gpu-host.eu-central-1.ip.aws"
+USER_16_1="ec2-user"
+K8S_DISTRO_16_1="k3s"
+NEEDS_MIRROR_16_1="true"
+
 # Example additional target:
 # HOST_onprem=""          # e.g. "gpu-server.internal.example.com"
 # USER_onprem="admin"

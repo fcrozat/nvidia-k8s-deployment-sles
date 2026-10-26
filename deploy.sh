@@ -112,9 +112,20 @@ ssh $TARGET_USER@$TARGET_HOST "bash -s" <<'EOF'
   for pkg in git-core podman make; do
     if ! rpm -q $pkg > /dev/null 2>&1; then
       echo "Installing remote package: $pkg"
-      sudo zypper in -y $pkg
+      sudo zypper in -y $pkg || true
     fi
   done
+
+  missing_pkgs=()
+  for pkg in git-core podman make; do
+    if ! rpm -q $pkg > /dev/null 2>&1; then
+      missing_pkgs+=("$pkg")
+    fi
+  done
+  if [ ${#missing_pkgs[@]} -gt 0 ]; then
+    echo "Warning: Missing required packages: ${missing_pkgs[*]}"
+    echo "Please ensure zypper repositories are enabled on the remote host (e.g. check 'zypper lr')."
+  fi
 
   # nvidia-container-toolkit must NOT be installed on the host as it conflicts with the GPU Operator
   if rpm -q nvidia-container-toolkit > /dev/null 2>&1; then
@@ -288,6 +299,22 @@ else
   exit 1
 fi
 
+# Configure firewall on remote host if firewalld is active
+echo "Checking firewall on remote host..."
+# shellcheck disable=SC2029
+ssh $TARGET_USER@$TARGET_HOST "bash -s" <<EOF
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+    echo "firewalld is active on remote host. Opening required ports and trusting cluster subnets..."
+    sudo firewall-cmd --permanent --add-port=6443/tcp
+    if [ "$K8S_DISTRO" == "rke2" ]; then
+      sudo firewall-cmd --permanent --add-port=9345/tcp
+    fi
+    sudo firewall-cmd --permanent --zone=trusted --add-source=10.42.0.0/16 2>/dev/null || true
+    sudo firewall-cmd --permanent --zone=trusted --add-source=10.43.0.0/16 2>/dev/null || true
+    sudo firewall-cmd --reload
+  fi
+EOF
+
 # SLES version was already detected at the beginning of the script
 
 # Fetch the kubeconfig from the remote node and update it for local access
@@ -303,6 +330,25 @@ sed -i "s/127.0.0.1/$TARGET_HOST/g" $KUBECONFIG_PATH
 sed -i 's/certificate-authority-data:.*/insecure-skip-tls-verify: true/g' $KUBECONFIG_PATH
 export KUBECONFIG=$KUBECONFIG_PATH
 echo "Kubeconfig saved to $KUBECONFIG"
+
+# Wait for the Kubernetes API to become reachable locally
+echo "Waiting for Kubernetes API to be reachable at https://$TARGET_HOST:6443..."
+api_ready=false
+for _i in {1..30}; do
+  if kubectl get nodes >/dev/null 2>&1; then
+    api_ready=true
+    break
+  fi
+  echo -n "."
+  sleep 3
+done
+echo ""
+
+if [ "$api_ready" != "true" ]; then
+  echo "Error: Kubernetes API at https://$TARGET_HOST:6443 is not reachable."
+  echo "Check if a firewall is blocking port 6443 on $TARGET_HOST, or check service status: ssh $TARGET_USER@$TARGET_HOST 'sudo systemctl status $SERVICE_NAME'"
+  exit 1
+fi
 
 if [ "$K3S_ONLY" == "true" ] || [ "$RKE2_ONLY" == "true" ]; then
   echo "$K8S_DISTRO setup complete. Stopping here."

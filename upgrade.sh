@@ -15,6 +15,7 @@ fi
 # --- Configuration & Discovery ---
 TARGET_KEY="${TARGET_OS:-$DEFAULT_TARGET}"
 TARGET_KEY="${TARGET_KEY//./_}"
+TARGET_KEY="${TARGET_KEY//-/_}"
 
 host_var="HOST_${TARGET_KEY}"
 user_var="USER_${TARGET_KEY}"

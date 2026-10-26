@@ -33,9 +33,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Defaults (can be overridden by env vars)
-# TARGET_OS selects a host configuration from config.sh (e.g. 15.7, 16.0, onprem)
+# TARGET_OS selects a host configuration from config.sh (e.g. 15.7, 16.0, 16.1, onprem, vera72)
 TARGET_KEY="${TARGET_OS:-$DEFAULT_TARGET}"
 TARGET_KEY="${TARGET_KEY//./_}" # Replace dots for valid variable names
+TARGET_KEY="${TARGET_KEY//-/_}" # Replace hyphens for valid variable names
 
 host_var="HOST_${TARGET_KEY}"
 user_var="USER_${TARGET_KEY}"

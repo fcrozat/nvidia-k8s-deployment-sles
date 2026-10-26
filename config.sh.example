@@ -24,11 +24,17 @@ USER_16_1="ec2-user"
 K8S_DISTRO_16_1="k3s"
 NEEDS_MIRROR_16_1="true"
 
-# Example additional target:
+# Example additional targets:
 # HOST_onprem=""          # e.g. "gpu-server.internal.example.com"
 # USER_onprem="admin"
 # K8S_DISTRO_onprem="rke2"
 # NEEDS_MIRROR_onprem="false"
+#
+# Baremetal system vera72 (e.g. SLES for Nvidia 16.1):
+# HOST_vera72=""       # e.g. "10.78.214.72"
+# USER_vera72="root"
+# K8S_DISTRO_vera72="k3s"
+# NEEDS_MIRROR_vera72="false"
 
 # Default target when TARGET_OS is not set
 DEFAULT_TARGET="15_7"
@@ -40,6 +46,7 @@ INTERNAL_REGISTRY=""      # e.g. "registry.example.com"
 # Used when USE_PREBUILT_CONTAINER=true (but not "production")
 INTERNAL_DRIVER_REGISTRY_15SP6=""  # e.g. "registry.example.com/nvidia/containerfile_15sp6/nvidia"
 INTERNAL_DRIVER_REGISTRY_15SP7=""  # e.g. "registry.example.com/nvidia/containerfile_15sp7/nvidia"
+INTERNAL_DRIVER_REGISTRY_16=""     # e.g. "registry.example.com/nvidia/containerfile_16/nvidia"
 
 # Default prebuilt driver repository for upgrade.sh
 DEFAULT_UPGRADE_DRIVER_REPOSITORY=""  # e.g. "registry.example.com/product/nvidia"

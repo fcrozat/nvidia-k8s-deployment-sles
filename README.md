@@ -48,7 +48,7 @@ These environment variables can override config.sh values or control script beha
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `TARGET_OS` | `DEFAULT_TARGET` from config.sh | Selects a target configuration (e.g. `15.7`, `16.0`, `onprem`). |
+| `TARGET_OS` | `DEFAULT_TARGET` from config.sh | Selects a target configuration (e.g. `15.7`, `16.0`, `16.1`, `onprem`, `vera72`). |
 | `TARGET_HOST` | `HOST_<target>` from config.sh | Override the hostname or IP of the remote machine. |
 | `TARGET_USER` | `USER_<target>` from config.sh | Override the SSH user. |
 | `K8S_DISTRO` | `K8S_DISTRO_<target>` from config.sh | Override the Kubernetes distribution. |
@@ -95,8 +95,14 @@ TARGET_OS=15.7 ./deploy.sh
 # Deploy to SLES 16.0
 TARGET_OS=16.0 ./deploy.sh
 
+# Deploy to SLES 16.1
+TARGET_OS=16.1 ./deploy.sh
+
 # Deploy to an on-premises host (if configured)
 TARGET_OS=onprem ./deploy.sh
+
+# Deploy to a baremetal host (if configured)
+TARGET_OS=vera72 ./deploy.sh
 ```
 
 #### Only install Kubernetes (k3s or rke2)

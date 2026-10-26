@@ -70,6 +70,11 @@ These environment variables can override config.sh values or control script beha
 | `USE_HELM_PRIVATE_REGISTRY` | `false` | If `true`, enables the use of a private Helm registry for the GPU Operator chart. Can be overridden per target. |
 | `HELM_PRIVATE_URL` | _empty_ | **Global**: Base URL or full path to a private Helm chart for the GPU Operator. |
 | `NGC_API_KEY` | _empty_ | **Global**: API Key for NGC authentication when `HELM_PRIVATE_URL` is used. |
+| `DEPLOY_NETWORK_OPERATOR` | `false` | If `true`, deploys NVIDIA Network Operator via Helm (overridable per target with `DEPLOY_NETWORK_OPERATOR_<TARGET>` or CLI flag `--network-operator`). |
+| `NETWORK_OPERATOR_ONLY` | `false` | If `true` (or CLI flag `--network-operator-only`), skips GPU Operator / driver builds and deploys only Network Operator. |
+| `NETWORK_OPERATOR_VERSION` | `v26.7.0` | Version of the `nvidia/network-operator` Helm chart to install. |
+| `NETWORK_OPERATOR_NAMESPACE` | `nvidia-network-operator` | Namespace for Network Operator (automatically labeled with privileged Pod Security Admission). |
+| `NIC_CLUSTER_POLICY_FILE` | _empty_ | Optional path to a `NicClusterPolicy` YAML manifest to apply after deploying Network Operator (see `nic-cluster-policy.yaml.example`). |
 
 ## Usage
 
@@ -88,6 +93,23 @@ chmod +x deploy.sh
 ```
 
 To target a specific configuration defined in `config.sh`:
+
+```bash
+TARGET_OS="15.7" ./deploy.sh
+TARGET_OS="16.0" ./deploy.sh
+TARGET_OS="16.1" ./deploy.sh
+TARGET_OS="vera72" ./deploy.sh
+```
+
+To deploy with the NVIDIA Network Operator:
+
+```bash
+# Deploy GPU Operator and Network Operator together
+TARGET_OS="vera72" ./deploy.sh --network-operator
+
+# Deploy only the Network Operator
+TARGET_OS="vera72" ./deploy.sh --network-operator-only
+```
 
 ```bash
 # Deploy to SLES 15.7

@@ -16,6 +16,7 @@ fi
 # Parse arguments
 K3S_ONLY=false
 RKE2_ONLY=false
+NETWORK_OPERATOR_ONLY=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --k3s-only)
@@ -26,7 +27,17 @@ while [[ $# -gt 0 ]]; do
     RKE2_ONLY=true
     shift
     ;;
+  --network-operator)
+    DEPLOY_NETWORK_OPERATOR=true
+    shift
+    ;;
+  --network-operator-only)
+    NETWORK_OPERATOR_ONLY=true
+    DEPLOY_NETWORK_OPERATOR=true
+    shift
+    ;;
   *)
+    TARGET_OS="$1"
     shift
     ;;
   esac
@@ -73,6 +84,15 @@ GPU_OPERATOR_IMAGE="${GPU_OPERATOR_IMAGE:-}"   # Optional override for GPU opera
 # Handle private Helm registry settings
 USE_HELM_PRIVATE_REGISTRY="${USE_HELM_PRIVATE_REGISTRY:-${!helm_priv_reg_var:-false}}"
 # HELM_PRIVATE_URL and NGC_API_KEY are global (from environment or config.sh)
+
+# Network Operator settings
+deploy_network_op_var="DEPLOY_NETWORK_OPERATOR_${TARGET_KEY}"
+DEPLOY_NETWORK_OPERATOR="${DEPLOY_NETWORK_OPERATOR:-${!deploy_network_op_var:-false}}"
+network_op_ver_var="NETWORK_OPERATOR_VERSION_${TARGET_KEY}"
+NETWORK_OPERATOR_VERSION="${NETWORK_OPERATOR_VERSION:-${!network_op_ver_var:-v26.7.0}}"
+NETWORK_OPERATOR_NAMESPACE="${NETWORK_OPERATOR_NAMESPACE:-nvidia-network-operator}"
+NETWORK_OPERATOR_RELEASE="${NETWORK_OPERATOR_RELEASE:-network-operator}"
+NIC_CLUSTER_POLICY_FILE="${NIC_CLUSTER_POLICY_FILE:-}"
 
 # Detect SLES version early for log filename
 echo "Detecting SLES version on remote host..."
@@ -454,6 +474,84 @@ EOF
     sleep 5
   done
   echo -e "\nKubernetes API is ready."
+fi
+
+deploy_network_operator() {
+  local net_release="${NETWORK_OPERATOR_RELEASE:-network-operator}"
+  local net_ns="${NETWORK_OPERATOR_NAMESPACE:-nvidia-network-operator}"
+  local net_chart="nvidia/network-operator"
+  local net_version="${NETWORK_OPERATOR_VERSION:-v26.7.0}"
+  local net_values="network-operator-values.yaml"
+
+  echo "=================================================="
+  echo "Deploying NVIDIA Network Operator (${net_version})..."
+  echo "=================================================="
+
+  # 1. Create namespace and configure Pod Security Admission for privileged workloads
+  echo "Creating and configuring namespace '$net_ns' (privileged PSA)..."
+  kubectl create namespace "$net_ns" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl label --overwrite namespace "$net_ns" pod-security.kubernetes.io/enforce=privileged
+
+  # 2. Ensure Helm repository is ready
+  if ! helm repo list 2>/dev/null | grep -q "^nvidia"; then
+    echo "Adding nvidia Helm repo https://helm.ngc.nvidia.com/nvidia..."
+    helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+  fi
+  helm repo update
+
+  # 3. Detect if Node Feature Discovery (NFD) is already running in the cluster
+  local nfd_enabled="true"
+  if kubectl get crd nodefeatures.nfd.k8s-sigs.io >/dev/null 2>&1; then
+    if kubectl get pods -A -l app.kubernetes.io/component=node-feature-discovery-master 2>/dev/null | grep -q Running || \
+       kubectl get pods -A -l app.kubernetes.io/component=nfd-master 2>/dev/null | grep -q Running || \
+       kubectl get pods -A -l app=node-feature-discovery 2>/dev/null | grep -q Running; then
+      echo "Node Feature Discovery (NFD) is already running on the cluster. Disabling NFD subchart in Network Operator..."
+      nfd_enabled="false"
+    fi
+  fi
+
+  # 4. Generate values file
+  cat <<EOF > "$net_values"
+nfd:
+  enabled: ${nfd_enabled}
+upgradeCRDs: true
+keepNCP: true
+EOF
+
+  local helm_net_args=(
+    upgrade --install "$net_release" "$net_chart"
+    -n "$net_ns"
+    --create-namespace
+    --version "$net_version"
+    -f "$net_values"
+  )
+
+  if [ -n "${NETWORK_OPERATOR_VALUES:-}" ] && [ -f "${NETWORK_OPERATOR_VALUES:-}" ]; then
+    helm_net_args+=("-f" "$NETWORK_OPERATOR_VALUES")
+  fi
+
+  echo "Installing/Upgrading Network Operator via Helm..."
+  helm "${helm_net_args[@]}"
+
+  echo "Waiting for Network Operator deployment to be rolled out..."
+  kubectl -n "$net_ns" rollout status deployment/network-operator --timeout=5m || true
+
+  rm -f "$net_values"
+
+  # 5. Optionally apply NicClusterPolicy if provided
+  if [ -n "${NIC_CLUSTER_POLICY_FILE:-}" ] && [ -f "${NIC_CLUSTER_POLICY_FILE:-}" ]; then
+    echo "Applying NicClusterPolicy from ${NIC_CLUSTER_POLICY_FILE}..."
+    kubectl apply -f "$NIC_CLUSTER_POLICY_FILE"
+  fi
+
+  echo "NVIDIA Network Operator deployment complete."
+}
+
+if [ "$NETWORK_OPERATOR_ONLY" == "true" ]; then
+  echo "NETWORK_OPERATOR_ONLY is set to true. Skipping GPU Operator and deploying Network Operator..."
+  deploy_network_operator
+  echo "Deployment of Network Operator completed successfully."
+  exit 0
 fi
 
 # --- Remote Container Build and Push ---
@@ -1274,4 +1372,9 @@ fi
 rm gpu-operator-values.yaml
 if [ "$USE_HELM_PRIVATE_REGISTRY" == "true" ]; then
   rm -f "$HELM_CHART"
+fi
+
+# Deploy Network Operator if requested
+if [ "$DEPLOY_NETWORK_OPERATOR" == "true" ]; then
+  deploy_network_operator
 fi

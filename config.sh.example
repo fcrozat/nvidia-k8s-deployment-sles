@@ -61,3 +61,11 @@ DEFAULT_UPGRADE_DRIVER_REPOSITORY=""  # e.g. "registry.example.com/product/nvidi
 USE_HELM_PRIVATE_REGISTRY="false"
 HELM_PRIVATE_URL="" # Global:  "https://helm.ngc.nvidia.com/nvidia"
 NGC_API_KEY=""      # Global: API Key for NGC authentication
+
+# Network Operator configuration
+# Set DEPLOY_NETWORK_OPERATOR=true to install NVIDIA Network Operator alongside GPU Operator
+# Can also be set per target (e.g. DEPLOY_NETWORK_OPERATOR_vera72="true")
+DEPLOY_NETWORK_OPERATOR="false"
+NETWORK_OPERATOR_VERSION="v26.7.0"
+# NETWORK_OPERATOR_NAMESPACE="nvidia-network-operator"
+# NIC_CLUSTER_POLICY_FILE="" # Path to NicClusterPolicy YAML to apply (see nic-cluster-policy.yaml.example)

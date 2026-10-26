@@ -26,7 +26,8 @@ TARGET_HOST="${TARGET_HOST:-${!host_var}}"
 TARGET_USER="${TARGET_USER:-${!user_var}}"
 K8S_DISTRO="${K8S_DISTRO:-${!distro_var}}"
 NEEDS_MIRROR="${NEEDS_MIRROR:-${!mirror_var:-false}}"
-USE_PREBUILT_CONTAINER="${USE_PREBUILT_CONTAINER:-true}"
+use_prebuilt_var="USE_PREBUILT_CONTAINER_${TARGET_KEY}"
+USE_PREBUILT_CONTAINER="${USE_PREBUILT_CONTAINER:-${!use_prebuilt_var:-production}}"
 USE_PRECOMPILED="${USE_PRECOMPILED:-false}"
 
 if [ -z "$NVIDIA_DRIVER_VERSION" ]; then
@@ -81,8 +82,10 @@ else
     echo "Image not found. Proceeding with mirroring..."
 
     # Determine source repository
-    if [ "$USE_PREBUILT_CONTAINER" = "true" ]; then
-        if [ -z "$DRIVER_REPOSITORY" ]; then
+    if [ "$USE_PREBUILT_CONTAINER" != "false" ]; then
+        if [ "$USE_PREBUILT_CONTAINER" = "production" ]; then
+            DRIVER_REPOSITORY="registry.suse.com/third-party/nvidia"
+        elif [ -z "$DRIVER_REPOSITORY" ]; then
              # Default to a known stable path if not provided
             DRIVER_REPOSITORY="$DEFAULT_UPGRADE_DRIVER_REPOSITORY"
         fi

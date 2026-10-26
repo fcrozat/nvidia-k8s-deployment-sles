@@ -61,7 +61,8 @@ fi
 NEEDS_MIRROR="${NEEDS_MIRROR:-${!mirror_var:-false}}"
 use_prebuilt_var="USE_PREBUILT_CONTAINER_${TARGET_KEY}"
 USE_PREBUILT_CONTAINER="${USE_PREBUILT_CONTAINER:-${!use_prebuilt_var:-production}}"
-USE_UPSTREAM_GPU_OPERATOR="${USE_UPSTREAM_GPU_OPERATOR:-false}"
+use_upstream_var="USE_UPSTREAM_GPU_OPERATOR_${TARGET_KEY}"
+USE_UPSTREAM_GPU_OPERATOR="${USE_UPSTREAM_GPU_OPERATOR:-${!use_upstream_var:-true}}"
 RKE2_NO_RPM="${RKE2_NO_RPM:-false}"
 KERNEL_MODULE_TYPE="${KERNEL_MODULE_TYPE:-auto}"
 USE_PRECOMPILED="${USE_PRECOMPILED:-false}"
@@ -455,9 +456,40 @@ EOF
 fi
 
 # --- Remote Container Build and Push ---
-NVIDIA_DRIVER_VERSION="${NVIDIA_DRIVER_VERSION:-595.58.03}"
-GPU_OPERATOR_VERSION="${GPU_OPERATOR_VERSION:-v26.3.1}"
-DRIVER_CONTAINER_BRANCH="${DRIVER_CONTAINER_BRANCH:-sles15-refresh}"
+DRIVER_CONTAINER_REPO="${DRIVER_CONTAINER_REPO:-https://github.com/SUSE/BCI-dockerfile-generator.git}"
+
+if [ -z "$NVIDIA_DRIVER_VERSION" ]; then
+  driver_ver_var="NVIDIA_DRIVER_VERSION_${TARGET_KEY}"
+  if [ -n "${!driver_ver_var}" ]; then
+    NVIDIA_DRIVER_VERSION="${!driver_ver_var}"
+  elif [[ "$SLES" == "16.1"* ]]; then
+    NVIDIA_DRIVER_VERSION="615.71.09"
+  else
+    NVIDIA_DRIVER_VERSION="595.91.07"
+  fi
+fi
+
+GPU_OPERATOR_VERSION="${GPU_OPERATOR_VERSION:-v26.7.2}"
+if [[ "$GPU_OPERATOR_VERSION" != v* ]]; then
+  GPU_OPERATOR_VERSION="v${GPU_OPERATOR_VERSION}"
+fi
+SLES_MAJOR="${SLES%%.*}"
+if [ -z "$DRIVER_CONTAINER_BRANCH" ]; then
+  driver_branch_var="DRIVER_CONTAINER_BRANCH_${TARGET_KEY}"
+  if [ -n "${!driver_branch_var}" ]; then
+    DRIVER_CONTAINER_BRANCH="${!driver_branch_var}"
+  elif [[ "$SLES" == "15.7"* ]]; then
+    DRIVER_CONTAINER_BRANCH="sle15-sp7"
+  elif [[ "$SLES" == "16.0"* ]]; then
+    DRIVER_CONTAINER_BRANCH="16.0"
+  elif [[ "$SLES" == "16.1"* ]]; then
+    DRIVER_CONTAINER_BRANCH="16.1"
+  elif [[ "$SLES" == "15"* ]]; then
+    DRIVER_CONTAINER_BRANCH="sle15-sp7"
+  else
+    DRIVER_CONTAINER_BRANCH="${SLES}"
+  fi
+fi
 DRIVER_IMAGE_NAME="${DRIVER_IMAGE_NAME:-driver}"
 
 # SLES version was already detected earlier for kubeconfig naming
@@ -526,6 +558,7 @@ if ! ssh $TARGET_USER@$TARGET_HOST \
   SLES="$SLES" \
   FINAL_REGISTRY_TAG="$FINAL_REGISTRY_TAG" \
   REGISTRY_IP="$REGISTRY_IP" \
+  DRIVER_CONTAINER_REPO="$DRIVER_CONTAINER_REPO" \
   DRIVER_CONTAINER_BRANCH="$DRIVER_CONTAINER_BRANCH" \
   USE_PREBUILT_CONTAINER="$USE_PREBUILT_CONTAINER" \
   USE_UPSTREAM_GPU_OPERATOR="$USE_UPSTREAM_GPU_OPERATOR" \
@@ -565,51 +598,223 @@ if [ "$USE_PREBUILT_CONTAINER" != "false" ]; then
     echo "Skipping driver build/push (using prebuilt driver container directly from $PREBUILT_DRIVER_IMAGE)."
   fi
 else
+  REPO_URL="${DRIVER_CONTAINER_REPO:-https://github.com/SUSE/BCI-dockerfile-generator.git}"
   BRANCH="$DRIVER_CONTAINER_BRANCH"
 
-  # Determine build directory based on branch
-  if [[ "$BRANCH" == *"packages"* || "$BRANCH" == *"cuda"* ]]; then
-    BUILD_DIR="sle15/official-packages"
-  else
-    BUILD_DIR="sle15"
-  fi
-  echo "Using branch: $BRANCH"
-  echo "Build directory: $BUILD_DIR"
+  # Determine repo checkout directory name
+  REPO_NAME=$(basename "$REPO_URL" .git)
+  REPO_DIR="$HOME/checkout/nvidia/$REPO_NAME"
 
-  # Clone the driver container repo
-  if [ ! -d "$HOME/checkout/nvidia/gpu-driver-container" ]; then
+  if [ ! -d "$REPO_DIR" ]; then
     mkdir -p ~/checkout/nvidia
     cd ~/checkout/nvidia
-    git clone -b $BRANCH https://github.com/fcrozat/gpu-driver-container.git
+    git clone -b "$BRANCH" "$REPO_URL"
   else
-    cd ~/checkout/nvidia/gpu-driver-container
-    # Check if we need to switch branches
+    cd "$REPO_DIR"
     CURRENT_BRANCH=$(git branch --show-current)
     if [ "$CURRENT_BRANCH" != "$BRANCH" ]; then
-        git fetch origin
-        git switch $BRANCH
+      git fetch origin
+      git switch "$BRANCH"
     fi
     git pull
   fi
-  cd ~/checkout/nvidia/gpu-driver-container/$BUILD_DIR
 
-  # Set the local build tag (used before pushing to registry)
   LOCAL_BUILD_TAG="nvidia/nvidia-gpu-driver:$NVIDIA_DRIVER_VERSION"
 
-  if [ "$DRIVER_CONTAINER_BRANCH" == "cuda-combined-container" ]; then
-    # Build additional images
-    echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH -t nvidia/driver-open:$NVIDIA_DRIVER_VERSION-sles$SLES -f Dockerfile.open"
-    podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH"  -t "nvidia/driver-open:$NVIDIA_DRIVER_VERSION-sles$SLES" -f Dockerfile.open
-    echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH -t nvidia/driver-closed:$NVIDIA_DRIVER_VERSION-sles$SLES -f Dockerfile.closed"
-    podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH"  -t "nvidia/driver-closed:$NVIDIA_DRIVER_VERSION-sles$SLES" -f Dockerfile.closed
-  fi
+  # Check for BCI-dockerfile-generator layout (nvidia-driver-image directory)
+  if [ -d "$REPO_DIR/nvidia-driver-image" ]; then
+    cd "$REPO_DIR/nvidia-driver-image"
 
-  # Build the driver image
-  if [ "$USE_PRECOMPILED" == "true" ]; then
-    echo "Building precompiled driver image with tag: $LOCAL_BUILD_TAG"
+    # Reset any previous edits to ensure clean starting state
+    git checkout -- . 2>/dev/null || true
+
+    # Select Dockerfile based on driver branch and kernel page size (64kb)
+    IS_64KB=false
+    if uname -r | grep -q "64kb" || [ "$(getconf PAGESIZE 2>/dev/null)" = "65536" ]; then
+      IS_64KB=true
+    fi
+
+    DOCKERFILE=""
+    if [ "$IS_64KB" = true ] && [ -f "Dockerfile.driver-${DRIVER_BRANCH}-64kb" ]; then
+      DOCKERFILE="Dockerfile.driver-${DRIVER_BRANCH}-64kb"
+    elif [ -f "Dockerfile.driver-${DRIVER_BRANCH}" ]; then
+      DOCKERFILE="Dockerfile.driver-${DRIVER_BRANCH}"
+    elif [ "$IS_64KB" = true ] && ls Dockerfile.driver-*-64kb >/dev/null 2>&1; then
+      DOCKERFILE=$(ls -1 Dockerfile.driver-*-64kb | sort -V | tail -n 1)
+    elif ls Dockerfile.driver-* >/dev/null 2>&1; then
+      DOCKERFILE=$(ls -1 Dockerfile.driver-* | grep -v 64kb | sort -V | tail -n 1)
+    else
+      DOCKERFILE="Dockerfile"
+    fi
+
+    echo "Using Dockerfile: $DOCKERFILE"
+
+    # Check if host uses kernel-nvidia64kb (e.g. SLES for NVIDIA)
+    IS_NVIDIA64KB=false
+    if uname -r | grep -q "nvidia64kb" || rpm -q kernel-nvidia64kb >/dev/null 2>&1; then
+      IS_NVIDIA64KB=true
+    fi
+
+    if [ "$IS_NVIDIA64KB" = true ]; then
+      echo "SLES for NVIDIA detected (kernel-nvidia64kb). Adapting Dockerfile to use kernel-nvidia64kb / kernel-nvidia64kb-devel..."
+      python3 - "$DOCKERFILE" <<'PY'
+import sys
+
+dockerfile_path = sys.argv[1]
+with open(dockerfile_path, "r") as f:
+    lines_in = f.read().splitlines()
+
+lines_out = []
+in_open_builder = False
+skip_kernel = False
+
+for line in lines_in:
+    if line.startswith("FROM ") and "open-driver-builder" in line:
+        in_open_builder = True
+    elif line.startswith("FROM ") and in_open_builder:
+        in_open_builder = False
+
+    # 1. Install dkms with rpm --nodeps before zypper to avoid missing kernel-syms requirement
+    if in_open_builder and "zypper -n" in line and "install" in line:
+        lines_out.append("        rpm -ivh --nodeps /tmp/dkms-*.rpm; \\")
+        lines_out.append(line)
+        continue
+
+    # Omit dkms from zypper install arguments
+    if in_open_builder and "/tmp/dkms-" in line:
+        continue
+
+    if skip_kernel:
+        if line.strip().startswith("fi"):
+            skip_kernel = False
+            lines_out.append(line)
+        continue
+
+    # 2. In open-driver-builder, replace kernel-64kb / signed kmp packages with kernel-nvidia64kb kernel-nvidia64kb-devel
+    if in_open_builder and "/tmp/kernel-64kb" in line:
+        lines_out.append("            kernel-nvidia64kb kernel-nvidia64kb-devel; \\")
+        skip_kernel = True
+        continue
+
+    # 3. Comment out COPY lines for kernel and signed kmp packages
+    if line.startswith("COPY kernel-") or line.startswith("COPY nvidia-open-driver-"):
+        lines_out.append("# " + line)
+        continue
+
+    # 4. In builder stage, replace rpm install of signed kmp with true
+    if "rpm --root /target -ivh" in line:
+        lines_out.append("        true; \\")
+        continue
+    if "nvidia-open-driver-G07-signed-cuda-kmp" in line and not in_open_builder:
+        continue
+
+    # 5. Target nvidia64kb kernel in dkms autoinstall
+    if "dkms autoinstall" in line:
+        lines_out.append(line.replace("*-64kb", "*nvidia64kb"))
+        continue
+
+    lines_out.append(line)
+
+with open(dockerfile_path, "w") as f:
+    f.write("\n".join(lines_out) + "\n")
+PY
+    fi
+
+    # Ensure host Zypp repositories and credentials are accessible during container build
+    BUILD_MOUNTS=()
+    sudo mkdir -p /etc/containers
+    for p in /etc/SUSEConnect /etc/zypp/credentials.d /etc/zypp/repos.d /etc/zypp/services.d; do
+      if [ -e "$p" ]; then
+        grep -q "^$p:$p" /etc/containers/mounts.conf 2>/dev/null || echo "$p:$p" | sudo tee -a /etc/containers/mounts.conf >/dev/null
+        BUILD_MOUNTS+=("-v" "$p:$p:ro")
+      fi
+    done
+
+    # Ensure zypper auto-imports GPG keys and remove OBS-internal signing dependency if not present
+    sed -i 's/zypper -n install/zypper -n --gpg-auto-import-keys install/g' "$DOCKERFILE"
+    sed -i 's/pesign-obs-integration //g' "$DOCKERFILE"
+
+    # Download required RPM packages referenced in #!RemoteAssetUrl comments
+    echo "Downloading required RPM packages for $DOCKERFILE ..."
+    while read -r prefix url rest || [ -n "$prefix" ]; do
+      [ "$prefix" = "#!RemoteAssetUrl:" ] || continue
+      [ -n "$url" ] || continue
+      read -r first_rest _ <<< "$rest"
+      if [ -n "$first_rest" ] && [[ "$first_rest" != sha256:* ]]; then
+        pkg_file="$first_rest"
+      else
+        pkg_file="${url##*/}"
+      fi
+
+      # Skip kernel-64kb and kmp downloads when using kernel-nvidia64kb from repository
+      if [ "$IS_NVIDIA64KB" = true ]; then
+        if [[ "$pkg_file" == kernel-* || "$pkg_file" == nvidia-open-driver-* ]]; then
+          echo "Skipping $pkg_file (using kernel-nvidia64kb from repository)."
+          continue
+        fi
+      fi
+
+      if [ ! -f "$pkg_file" ]; then
+        echo "Downloading $pkg_file from $url ..."
+        curl -fSL --retry 3 --retry-delay 2 -o "$pkg_file" "$url"
+      else
+        echo "$pkg_file already downloaded."
+      fi
+    done < "$DOCKERFILE"
+
+    echo "Running: podman build --network=host ${BUILD_MOUNTS[*]} -f $DOCKERFILE -t $LOCAL_BUILD_TAG ."
+    podman build --network=host "${BUILD_MOUNTS[@]}" -f "$DOCKERFILE" -t "$LOCAL_BUILD_TAG" .
+  else
+    # Fallback to legacy gpu-driver-container layout
+    SLES_MAJOR="${SLES%%.*}"
+    if [ -d "sle${SLES_MAJOR}" ]; then
+      OS_DIR="sle${SLES_MAJOR}"
+    else
+      OS_DIR="sle15"
+    fi
+
+    if [[ "$BRANCH" == *"packages"* || "$BRANCH" == *"cuda"* ]]; then
+      BUILD_DIR="${OS_DIR}/official-packages"
+    else
+      BUILD_DIR="${OS_DIR}"
+    fi
+    echo "Using branch: $BRANCH"
+    echo "Build directory: $BUILD_DIR"
+
+    if [ ! -d "$BUILD_DIR" ]; then
+      echo "Error: Driver container build directory '$BUILD_DIR' not found in branch '$BRANCH'."
+      exit 1
+    fi
+    cd "$REPO_DIR/$BUILD_DIR"
+
+    # For SLES 16+, ensure Dockerfile uses BCI base image instead of legacy sle15
+    if [ "${SLES_MAJOR:-15}" -ge 16 ] && [ -f Dockerfile ]; then
+      sed -i "s|registry.suse.com/suse/sle15:\$SLES_VERSION|registry.suse.com/bci/bci-base:\$SLES_VERSION|g; s|registry.suse.com/suse/sle15:|registry.suse.com/bci/bci-base:|g" Dockerfile
+    fi
+
+    # Determine architecture for TARGETARCH build-arg (NVIDIA CUDA repo uses sbsa for arm64)
+    HOST_ARCH=$(uname -m)
+    if [ "$HOST_ARCH" = "aarch64" ] || [ "$HOST_ARCH" = "arm64" ]; then
+      BUILD_ARCH="sbsa"
+    else
+      BUILD_ARCH="amd64"
+    fi
+
+    if [ "$DRIVER_CONTAINER_BRANCH" == "cuda-combined-container" ]; then
+      # Build additional images
+      echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH --build-arg TARGETARCH=$BUILD_ARCH -t nvidia/driver-open:$NVIDIA_DRIVER_VERSION-sles$SLES -f Dockerfile.open"
+      podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH" --build-arg TARGETARCH="$BUILD_ARCH" -t "nvidia/driver-open:$NVIDIA_DRIVER_VERSION-sles$SLES" -f Dockerfile.open
+      echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH --build-arg TARGETARCH=$BUILD_ARCH -t nvidia/driver-closed:$NVIDIA_DRIVER_VERSION-sles$SLES -f Dockerfile.closed"
+      podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH" --build-arg TARGETARCH="$BUILD_ARCH" -t "nvidia/driver-closed:$NVIDIA_DRIVER_VERSION-sles$SLES" -f Dockerfile.closed
+    fi
+
+    # Build the driver image
+    if [ "$USE_PRECOMPILED" == "true" ]; then
+      echo "Building precompiled driver image with tag: $LOCAL_BUILD_TAG"
+    fi
+    echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH --build-arg TARGETARCH=$BUILD_ARCH -t $LOCAL_BUILD_TAG ."
+    podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH" --build-arg TARGETARCH="$BUILD_ARCH" -t "$LOCAL_BUILD_TAG" .
   fi
-  echo "Running: podman build --build-arg DRIVER_VERSION=$NVIDIA_DRIVER_VERSION --build-arg SLES_VERSION=$SLES --build-arg DRIVER_BRANCH=$DRIVER_BRANCH -t $LOCAL_BUILD_TAG ."
-  podman build --build-arg DRIVER_VERSION="$NVIDIA_DRIVER_VERSION" --build-arg SLES_VERSION="$SLES" --build-arg DRIVER_BRANCH="$DRIVER_BRANCH"  -t "$LOCAL_BUILD_TAG" .
 
   # Push the image with the appropriate tag
   if [ "$USE_PRECOMPILED" == "true" ]; then

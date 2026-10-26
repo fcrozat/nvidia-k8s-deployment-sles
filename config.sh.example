@@ -48,6 +48,9 @@ INTERNAL_DRIVER_REGISTRY_15SP6=""  # e.g. "registry.example.com/nvidia/container
 INTERNAL_DRIVER_REGISTRY_15SP7=""  # e.g. "registry.example.com/nvidia/containerfile_15sp7/nvidia"
 INTERNAL_DRIVER_REGISTRY_16=""     # e.g. "registry.example.com/nvidia/containerfile_16/nvidia"
 
+# Driver container build repository
+# DRIVER_CONTAINER_REPO="https://github.com/SUSE/BCI-dockerfile-generator.git"
+
 # Default prebuilt driver repository for upgrade.sh
 DEFAULT_UPGRADE_DRIVER_REPOSITORY=""  # e.g. "registry.example.com/product/nvidia"
 

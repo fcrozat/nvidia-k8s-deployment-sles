@@ -65,7 +65,8 @@ use_upstream_var="USE_UPSTREAM_GPU_OPERATOR_${TARGET_KEY}"
 USE_UPSTREAM_GPU_OPERATOR="${USE_UPSTREAM_GPU_OPERATOR:-${!use_upstream_var:-true}}"
 RKE2_NO_RPM="${RKE2_NO_RPM:-false}"
 KERNEL_MODULE_TYPE="${KERNEL_MODULE_TYPE:-auto}"
-USE_PRECOMPILED="${USE_PRECOMPILED:-false}"
+use_precompiled_var="USE_PRECOMPILED_${TARGET_KEY}"
+USE_PRECOMPILED="${USE_PRECOMPILED:-${!use_precompiled_var:-false}}"
 GPU_OPERATOR_BRANCH="${GPU_OPERATOR_BRANCH:-}" # Optional override for GPU operator branch
 GPU_OPERATOR_IMAGE="${GPU_OPERATOR_IMAGE:-}"   # Optional override for GPU operator image
 
@@ -1077,15 +1078,17 @@ verify_upstream_precompiled_driver_override() {
     exit 1
   fi
 
-  if ! kubectl -n "$NAMESPACE" get configmap gpu-operator-state-driver-override >/dev/null 2>&1; then
-    echo "Error: ConfigMap gpu-operator-state-driver-override was not created."
-    exit 1
-  fi
+  if [ "${manifest_patched:-false}" = "true" ]; then
+    if ! kubectl -n "$NAMESPACE" get configmap gpu-operator-state-driver-override >/dev/null 2>&1; then
+      echo "Error: ConfigMap gpu-operator-state-driver-override was not created."
+      exit 1
+    fi
 
-  deployment_override_mount=$(kubectl -n "$NAMESPACE" get deployment gpu-operator -o jsonpath="{.spec.template.spec.containers[?(@.name=='gpu-operator')].volumeMounts[?(@.name=='state-driver-override')].mountPath}")
-  if [ "$deployment_override_mount" != "/opt/gpu-operator/state-driver/0500_daemonset.yaml" ] && [ "$deployment_override_mount" != "/opt/gpu-operator/manifests/state-driver/0500_daemonset.yaml" ]; then
-    echo "Error: gpu-operator deployment is not mounting the overridden state-driver manifest."
-    exit 1
+    deployment_override_mount=$(kubectl -n "$NAMESPACE" get deployment gpu-operator -o jsonpath="{.spec.template.spec.containers[?(@.name=='gpu-operator')].volumeMounts[?(@.name=='state-driver-override')].mountPath}")
+    if [ "$deployment_override_mount" != "/opt/gpu-operator/state-driver/0500_daemonset.yaml" ] && [ "$deployment_override_mount" != "/opt/gpu-operator/manifests/state-driver/0500_daemonset.yaml" ]; then
+      echo "Error: gpu-operator deployment is not mounting the overridden state-driver manifest."
+      exit 1
+    fi
   fi
 
   for _attempt in $(seq 1 60); do
@@ -1253,19 +1256,19 @@ version_gt() {
 }
 
 if [ "$USE_UPSTREAM_GPU_OPERATOR" == "true" ]; then
-  if version_gt "$GPU_OPERATOR_VERSION" "v26.3.0"; then
-    echo "GPU_OPERATOR_VERSION is $GPU_OPERATOR_VERSION (> v26.3.0), skipping upstream manifest patching."
+  manifest_patched=false
+  if [ "$USE_PRECOMPILED" == "true" ] && version_gt "$GPU_OPERATOR_VERSION" "v26.3.0"; then
+    echo "GPU_OPERATOR_VERSION is $GPU_OPERATOR_VERSION (> v26.3.0) with USE_PRECOMPILED=true; upstream operator natively mounts /run/host/lib/modules dynamically."
   else
     patch_upstream_precompiled_driver_manifest
+    manifest_patched=true
   fi
 
   echo "Enabling the driver after applying any manifest overrides..."
   kubectl patch clusterpolicies.nvidia.com/cluster-policy --type='json' \
     -p='[{"op": "replace", "path": "/spec/driver/enabled", "value":true}]'
 
-  if ! version_gt "$GPU_OPERATOR_VERSION" "v26.3.0"; then
-    verify_upstream_precompiled_driver_override
-  fi
+  verify_upstream_precompiled_driver_override
 fi
 
 rm gpu-operator-values.yaml

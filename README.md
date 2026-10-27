@@ -1,6 +1,6 @@
-# NVIDIA GPU Operator Deployment
+# NVIDIA GPU & Network Operator Deployment
 
-This repository provides a streamlined way to deploy the NVIDIA GPU Operator on a remote Kubernetes cluster (K3s or RKE2) running on SUSE Linux Enterprise Server (SLES). It supports multiple target environments (cloud instances, on-premises hardware, etc.) via a flexible per-target configuration.
+This repository provides a streamlined way to deploy the NVIDIA GPU Operator and NVIDIA Network Operator on a remote Kubernetes cluster (K3s or RKE2) running on SUSE Linux Enterprise Server (SLES). It supports multiple target environments (cloud instances, on-premises hardware, etc.) via a flexible per-target configuration.
 
 ## Overview
 
@@ -11,8 +11,9 @@ The `deploy.sh` script automates the following steps:
 3. **Local Access Configuration**: Fetches the remote `kubeconfig`, updates it with the target host address, and configures local `kubectl` access (with insecure TLS skip for ease of use).
 4. **CoreDNS Tuning**: Configures CoreDNS to respect the host's `/etc/hosts`.
 5. **In-Cluster Registry**: Deploys a private Docker registry within the cluster to host driver and operator images.
-6. **Driver Image Setup**: Either builds the NVIDIA driver container on the remote host, or pulls a prebuilt image. If the target cannot reach the internal registry directly (`NEEDS_MIRROR=true`), images are mirrored via the local system.
-7. **GPU Operator Installation**: Installs the NVIDIA GPU Operator via Helm, configured to use the local or prebuilt images.
+6. **Driver Image Setup**: Either builds the NVIDIA GPU driver container on the remote host, or pulls a prebuilt image. If the target cannot reach the internal registry directly (`NEEDS_MIRROR=true`), images are mirrored via the local system.
+7. **DOCA Driver Image Setup (Optional)**: If `--build-doca-driver` is enabled, compiles the DOCA-OFED driver container using `doca-driver-build` (with support for SLES 16.0 and SLES 16.1 multi-flavor kernels such as `nvidia64kb` on `aarch64`) and pushes it to the in-cluster registry.
+8. **Operator Installation**: Installs the NVIDIA GPU Operator and/or NVIDIA Network Operator via Helm, configured to use the local or prebuilt images. Optionally applies `NicClusterPolicy` if specified.
 
 ## Prerequisites
 
@@ -75,6 +76,13 @@ These environment variables can override config.sh values or control script beha
 | `NETWORK_OPERATOR_VERSION` | `v26.7.0` | Version of the `nvidia/network-operator` Helm chart to install. |
 | `NETWORK_OPERATOR_NAMESPACE` | `nvidia-network-operator` | Namespace for Network Operator (automatically labeled with privileged Pod Security Admission). |
 | `NIC_CLUSTER_POLICY_FILE` | _empty_ | Optional path to a `NicClusterPolicy` YAML manifest to apply after deploying Network Operator (see `nic-cluster-policy.yaml.example`). |
+| `BUILD_DOCA_DRIVER` | `false` | If `true` (or CLI flag `--build-doca-driver`), builds the precompiled DOCA-OFED driver container using `doca-driver-build` and pushes it to the in-cluster registry. Overridable per target with `BUILD_DOCA_DRIVER_<TARGET>`. |
+| `DOCA_VERSION` | `3.5.0` | Version of DOCA sources to download (used with `BUILD_DOCA_DRIVER=true`). |
+| `DOCA_OFED_VERSION` | `26.07-0.7.7.0` | Version of MLNX_OFED sources (used with `BUILD_DOCA_DRIVER=true`). |
+| `DOCA_CONTAINER_VER` | `0` | Container version suffix for the DOCA driver image tag. |
+| `DOCA_DRIVER_REPO` | `https://github.com/fcrozat/doca-driver-build.git` | Git repository for DOCA driver container builds. |
+| `DOCA_DRIVER_BRANCH` | `SLES16` | Git branch for DOCA driver container builds (supports SLES 16.0 and SLES 16.1 multi-flavor kernels). |
+| `DOCA_DRIVER_IMAGE` | `doca-driver` | Name of the DOCA driver image pushed to the in-cluster registry. |
 
 ## Usage
 
@@ -95,23 +103,6 @@ chmod +x deploy.sh
 To target a specific configuration defined in `config.sh`:
 
 ```bash
-TARGET_OS="15.7" ./deploy.sh
-TARGET_OS="16.0" ./deploy.sh
-TARGET_OS="16.1" ./deploy.sh
-TARGET_OS="vera72" ./deploy.sh
-```
-
-To deploy with the NVIDIA Network Operator:
-
-```bash
-# Deploy GPU Operator and Network Operator together
-TARGET_OS="vera72" ./deploy.sh --network-operator
-
-# Deploy only the Network Operator
-TARGET_OS="vera72" ./deploy.sh --network-operator-only
-```
-
-```bash
 # Deploy to SLES 15.7
 TARGET_OS=15.7 ./deploy.sh
 
@@ -126,6 +117,19 @@ TARGET_OS=onprem ./deploy.sh
 
 # Deploy to a baremetal host (if configured)
 TARGET_OS=vera72 ./deploy.sh
+```
+
+#### Deploying with NVIDIA Network Operator and DOCA Driver
+
+```bash
+# Deploy GPU Operator and Network Operator together
+TARGET_OS="vera72" ./deploy.sh --network-operator
+
+# Deploy Network Operator and build/push precompiled DOCA driver container
+TARGET_OS="vera72" ./deploy.sh --network-operator --build-doca-driver
+
+# Deploy only the Network Operator and build/push DOCA driver container
+TARGET_OS="vera72" ./deploy.sh --network-operator-only --build-doca-driver
 ```
 
 #### Only install Kubernetes (k3s or rke2)
@@ -146,6 +150,13 @@ Wait for the GPU Operator pods to be ready:
 
 ```bash
 kubectl get pods -n gpu-operator
+```
+
+If Network Operator was deployed:
+
+```bash
+kubectl get pods -n nvidia-network-operator
+kubectl get nicclusterpolicy
 ```
 
 ### 4. Run a CUDA test
@@ -176,3 +187,4 @@ TARGET_OS=16.0 NVIDIA_DRIVER_VERSION=580.126.09 ./upgrade.sh
 * `upgrade.sh`: Script to mirror a specific NVIDIA driver version and patch the ClusterPolicy.
 * `container-registry.yaml`: Manifest for the in-cluster Docker registry.
 * `cuda-test.yaml`: A simple CUDA vectorAdd pod to verify GPU functionality.
+* `nic-cluster-policy.yaml.example`: Template for NVIDIA Network Operator `NicClusterPolicy` resource, including precompiled driver configuration.

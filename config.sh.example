@@ -69,3 +69,15 @@ DEPLOY_NETWORK_OPERATOR="false"
 NETWORK_OPERATOR_VERSION="v26.7.0"
 # NETWORK_OPERATOR_NAMESPACE="nvidia-network-operator"
 # NIC_CLUSTER_POLICY_FILE="" # Path to NicClusterPolicy YAML to apply (see nic-cluster-policy.yaml.example)
+
+# DOCA Driver Container configuration (for NVIDIA Network Operator)
+# Set BUILD_DOCA_DRIVER=true (or pass --build-doca-driver to deploy.sh) to build and push
+# the precompiled DOCA-OFED driver container using doca-driver-build.
+# Can also be set per target (e.g. BUILD_DOCA_DRIVER_vera72="true")
+BUILD_DOCA_DRIVER="false"
+DOCA_VERSION="3.5.0"
+DOCA_OFED_VERSION="26.07-0.7.7.0"
+DOCA_CONTAINER_VER="0"
+DOCA_DRIVER_REPO="https://github.com/fcrozat/doca-driver-build.git"
+DOCA_DRIVER_BRANCH="SLES16"
+# DOCA_DRIVER_IMAGE="doca-driver"

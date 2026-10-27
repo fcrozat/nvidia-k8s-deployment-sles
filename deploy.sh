@@ -36,6 +36,10 @@ while [[ $# -gt 0 ]]; do
     DEPLOY_NETWORK_OPERATOR=true
     shift
     ;;
+  --build-doca-driver)
+    BUILD_DOCA_DRIVER=true
+    shift
+    ;;
   *)
     TARGET_OS="$1"
     shift
@@ -93,6 +97,18 @@ NETWORK_OPERATOR_VERSION="${NETWORK_OPERATOR_VERSION:-${!network_op_ver_var:-v26
 NETWORK_OPERATOR_NAMESPACE="${NETWORK_OPERATOR_NAMESPACE:-nvidia-network-operator}"
 NETWORK_OPERATOR_RELEASE="${NETWORK_OPERATOR_RELEASE:-network-operator}"
 NIC_CLUSTER_POLICY_FILE="${NIC_CLUSTER_POLICY_FILE:-}"
+
+# DOCA Driver Container settings
+build_doca_var="BUILD_DOCA_DRIVER_${TARGET_KEY}"
+BUILD_DOCA_DRIVER="${BUILD_DOCA_DRIVER:-${!build_doca_var:-false}}"
+doca_repo_var="DOCA_DRIVER_REPO_${TARGET_KEY}"
+DOCA_DRIVER_REPO="${DOCA_DRIVER_REPO:-${!doca_repo_var:-https://github.com/fcrozat/doca-driver-build.git}}"
+doca_branch_var="DOCA_DRIVER_BRANCH_${TARGET_KEY}"
+DOCA_DRIVER_BRANCH="${DOCA_DRIVER_BRANCH:-${!doca_branch_var:-SLES16}}"
+DOCA_VERSION="${DOCA_VERSION:-3.5.0}"
+DOCA_OFED_VERSION="${DOCA_OFED_VERSION:-26.07-0.7.7.0}"
+DOCA_CONTAINER_VER="${DOCA_CONTAINER_VER:-0}"
+DOCA_DRIVER_IMAGE="${DOCA_DRIVER_IMAGE:-doca-driver}"
 
 # Detect SLES version early for log filename
 echo "Detecting SLES version on remote host..."
@@ -547,8 +563,111 @@ EOF
   echo "NVIDIA Network Operator deployment complete."
 }
 
+build_doca_driver() {
+  local doca_repo="${DOCA_DRIVER_REPO:-https://github.com/fcrozat/doca-driver-build.git}"
+  local doca_branch="${DOCA_DRIVER_BRANCH:-SLES16}"
+  local doca_ver="${DOCA_VERSION:-3.5.0}"
+  local ofed_ver="${DOCA_OFED_VERSION:-26.07-0.7.7.0}"
+  local container_ver="${DOCA_CONTAINER_VER:-0}"
+  local doca_image="${DOCA_DRIVER_IMAGE:-doca-driver}"
+
+  echo "=================================================="
+  echo "Building DOCA Driver Container (${doca_ver} / OFED ${ofed_ver})..."
+  echo "=================================================="
+
+  if ! ssh $TARGET_USER@$TARGET_HOST \
+    DOCA_REPO="$doca_repo" \
+    DOCA_BRANCH="$doca_branch" \
+    DOCA_VER="$doca_ver" \
+    OFED_VER="$ofed_ver" \
+    CONTAINER_VER="$container_ver" \
+    DOCA_IMAGE="$doca_image" \
+    REGISTRY_IP="$REGISTRY_IP" \
+    'bash -s' <<'EOF'
+set -e
+
+REPO_NAME=$(basename "$DOCA_REPO" .git)
+REPO_DIR="$HOME/checkout/nvidia/$REPO_NAME"
+
+if [ ! -d "$REPO_DIR" ]; then
+  mkdir -p "$HOME/checkout/nvidia"
+  cd "$HOME/checkout/nvidia"
+  git clone -b "$DOCA_BRANCH" "$DOCA_REPO"
+else
+  cd "$REPO_DIR"
+  CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || true)
+  if [ "$CURRENT_BRANCH" != "$DOCA_BRANCH" ]; then
+    git fetch origin
+    git switch "$DOCA_BRANCH"
+  fi
+  git pull
+fi
+
+cd "$REPO_DIR"
+
+KVER=$(uname -r)
+ARCH=$(uname -m)
+OS_ID="sles"
+OS_VER="16.1"
+if [ -f /etc/os-release ]; then
+  # shellcheck source=/dev/null
+  . /etc/os-release
+  OS_ID="${ID:-sles}"
+  OS_VER="${VERSION_ID:-16.1}"
+fi
+
+if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+  TAG_ARCH="arm64"
+  BUILD_ARCH="aarch64"
+else
+  TAG_ARCH="amd64"
+  BUILD_ARCH="x86_64"
+fi
+
+if [[ "$OS_VER" == "16.1"* ]]; then
+  D_OS="sles16sp1"
+  BASE_IMAGE="registry.suse.com/bci/bci-sle16-kernel-module-devel:16.1"
+elif [[ "$OS_VER" == "16.0"* ]]; then
+  D_OS="sles16sp0"
+  BASE_IMAGE="registry.suse.com/bci/bci-sle16-kernel-module-devel:16.0"
+else
+  D_OS="sles${OS_VER%%.*}sp${OS_VER##*.}"
+  BASE_IMAGE="registry.suse.com/bci/bci-sle16-kernel-module-devel:16.1"
+fi
+
+FULL_TAG="doca${DOCA_VER}-${OFED_VER}-${CONTAINER_VER}-${KVER}-${OS_ID}${OS_VER}-${TAG_ARCH}"
+LOCAL_TAG="nvidia/${DOCA_IMAGE}:${FULL_TAG}"
+REGISTRY_TARGET="${REGISTRY_IP}:5000/nvidia/${DOCA_IMAGE}:${FULL_TAG}"
+
+echo "Building precompiled DOCA driver container: $LOCAL_TAG"
+podman build \
+  --target precompiled \
+  --build-arg D_KERNEL_VER="$KVER" \
+  --build-arg D_ARCH="$BUILD_ARCH" \
+  --build-arg D_OS="$D_OS" \
+  --build-arg D_DOCA_VERSION="$DOCA_VER" \
+  --build-arg D_OFED_VERSION="$OFED_VER" \
+  --build-arg D_CONTAINER_VER="$CONTAINER_VER" \
+  --build-arg D_BASE_IMAGE="$BASE_IMAGE" \
+  -t "$LOCAL_TAG" \
+  -t "$REGISTRY_TARGET" \
+  -f SLES16_Dockerfile .
+
+echo "Pushing DOCA driver container to in-cluster registry: $REGISTRY_TARGET"
+podman push --tls-verify=false "$REGISTRY_TARGET"
+echo "DOCA driver container pushed successfully."
+EOF
+  then
+    echo "Error: Failed to build and push DOCA driver container."
+    exit 1
+  fi
+}
+
 if [ "$NETWORK_OPERATOR_ONLY" == "true" ]; then
   echo "NETWORK_OPERATOR_ONLY is set to true. Skipping GPU Operator and deploying Network Operator..."
+  if [ "$BUILD_DOCA_DRIVER" == "true" ]; then
+    build_doca_driver
+  fi
   deploy_network_operator
   echo "Deployment of Network Operator completed successfully."
   exit 0
@@ -1376,5 +1495,8 @@ fi
 
 # Deploy Network Operator if requested
 if [ "$DEPLOY_NETWORK_OPERATOR" == "true" ]; then
+  if [ "$BUILD_DOCA_DRIVER" == "true" ]; then
+    build_doca_driver
+  fi
   deploy_network_operator
 fi

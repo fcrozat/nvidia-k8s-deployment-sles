@@ -4,6 +4,11 @@ metadata:
   name: nic-cluster-policy
 spec:
   ofedDriver:
+    # When using the in-cluster registry with precompiled doca-driver:
+    # repository: <REGISTRY_IP>:5000/nvidia
+    # image: doca-driver
+    # version: doca3.5.0-26.07-0.7.7.0-0
+    # forcePrecompiled: true
     image: doca-driver
     repository: nvcr.io/nvidia/mellanox
     version: doca3.5.0-26.07-0.7.7.0-0

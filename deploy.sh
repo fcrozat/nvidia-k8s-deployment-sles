@@ -579,6 +579,12 @@ EOF
     helm_net_args+=("-f" "$NETWORK_OPERATOR_VALUES")
   fi
 
+  # Apply the chart CRDs before installing: the NodeFeatureRule CRD lives in the nfd subchart's
+  # crds/, and helm's API discovery is stale right after it creates them itself, so the chart's own
+  # templates fail with "no matches for kind NodeFeatureRule" on a fresh cluster.
+  echo "Applying Network Operator CRDs..."
+  helm show crds "$net_chart" --version "$net_version" 2>/dev/null | kubectl apply -f -
+
   echo "Installing/Upgrading Network Operator via Helm..."
   helm "${helm_net_args[@]}"
 

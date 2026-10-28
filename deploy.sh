@@ -34,9 +34,13 @@ OPTIONS
   --build-doca-driver        Build/push the precompiled DOCA-OFED driver container.
   -h, --help                 Show this help and exit.
 
+To use a prebuilt DOCA driver container instead of building it, set
+DOCA_DRIVER_PREBUILT_IMAGE=<registry>/<repo>:<tag> and omit --build-doca-driver.
+
 Environment overrides (see README.md for the full list):
   TARGET_HOST, TARGET_USER, K8S_DISTRO, NEEDS_MIRROR, USE_PREBUILT_CONTAINER,
-  USE_PRECOMPILED, GPU_OPERATOR_VERSION, NIC_CLUSTER_POLICY_FILE, DEPLOY_LOG
+  USE_PRECOMPILED, GPU_OPERATOR_VERSION, NIC_CLUSTER_POLICY_FILE, DEPLOY_LOG,
+  DOCA_DRIVER_PREBUILT_IMAGE
 
 Examples:
   ./deploy.sh 16.1
@@ -149,6 +153,10 @@ DOCA_VERSION="${DOCA_VERSION:-3.5.0}"
 DOCA_OFED_VERSION="${DOCA_OFED_VERSION:-26.07-0.7.7.0}"
 DOCA_CONTAINER_VER="${DOCA_CONTAINER_VER:-0}"
 DOCA_DRIVER_IMAGE="${DOCA_DRIVER_IMAGE:-doca-driver}"
+# Set to a full image reference to mirror a prebuilt DOCA driver container into the in-cluster
+# registry instead of building it on the node (overridable per target).
+doca_prebuilt_var="DOCA_DRIVER_PREBUILT_IMAGE_${TARGET_KEY}"
+DOCA_DRIVER_PREBUILT_IMAGE="${DOCA_DRIVER_PREBUILT_IMAGE:-${!doca_prebuilt_var:-}}"
 
 # Detect SLES version early for log filename
 echo "Detecting SLES version on remote host..."
@@ -602,6 +610,32 @@ EOF
   echo "NVIDIA Network Operator deployment complete."
 }
 
+# Mirror a prebuilt DOCA driver container into the in-cluster registry. The registry is a ClusterIP,
+# so the image is relayed through the node (pull locally, load remotely, push from there).
+mirror_doca_driver() {
+  local src="$DOCA_DRIVER_PREBUILT_IMAGE"
+  local target="${REGISTRY_IP}:5000/nvidia/${DOCA_DRIVER_IMAGE}:${src##*:}"
+
+  echo "=================================================="
+  echo "Mirroring prebuilt DOCA driver container..."
+  echo "  source:  $src"
+  echo "  target:  $target"
+  echo "=================================================="
+
+  if ! podman pull "$src"; then
+    echo "Error: Failed to pull prebuilt DOCA driver image $src"
+    exit 1
+  fi
+  if ! podman save "$src" | ssh $TARGET_USER@$TARGET_HOST \
+    "podman load && podman tag '$src' '$target' && podman push --tls-verify=false '$target'"; then
+    echo "Error: Failed to mirror $src to $target"
+    exit 1
+  fi
+  echo "DOCA driver container available in the in-cluster registry as $target"
+  echo "Set ofedDriver.repository=${REGISTRY_IP}:5000/nvidia, image=${DOCA_DRIVER_IMAGE}," \
+    "version=${src##*:} and forcePrecompiled=true in NIC_CLUSTER_POLICY_FILE."
+}
+
 build_doca_driver() {
   local doca_repo="${DOCA_DRIVER_REPO:-https://github.com/fcrozat/doca-driver-build.git}"
   local doca_branch="${DOCA_DRIVER_BRANCH:-SLES16}"
@@ -709,6 +743,8 @@ if [ "$NETWORK_OPERATOR_ONLY" == "true" ]; then
   echo "NETWORK_OPERATOR_ONLY is set to true. Skipping GPU Operator and deploying Network Operator..."
   if [ "$BUILD_DOCA_DRIVER" == "true" ]; then
     build_doca_driver
+  elif [ -n "$DOCA_DRIVER_PREBUILT_IMAGE" ]; then
+    mirror_doca_driver
   fi
   deploy_network_operator
   echo "Deployment of Network Operator completed successfully."

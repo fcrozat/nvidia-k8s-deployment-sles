@@ -83,6 +83,7 @@ These environment variables can override config.sh values or control script beha
 | `DOCA_DRIVER_REPO` | `https://github.com/fcrozat/doca-driver-build.git` | Git repository for DOCA driver container builds. |
 | `DOCA_DRIVER_BRANCH` | `SLES16` | Git branch for DOCA driver container builds (supports SLES 16.0 and SLES 16.1 multi-flavor kernels). |
 | `DOCA_DRIVER_IMAGE` | `doca-driver` | Name of the DOCA driver image pushed to the in-cluster registry. |
+| `DOCA_DRIVER_PREBUILT_IMAGE` | _empty_ | Full reference to a prebuilt DOCA driver container (e.g. `registry.suse.de/.../doca-driver:<tag>`). With `--network-operator-only` and no `--build-doca-driver`, the image is pulled locally, relayed through the node and pushed to the in-cluster registry instead of being built (the full deploy path only builds). Requires `podman login` on the source registry. Overridable per target with `DOCA_DRIVER_PREBUILT_IMAGE_<TARGET>`. |
 
 ## Usage
 

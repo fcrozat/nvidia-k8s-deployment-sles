@@ -448,27 +448,20 @@ data:
     hosts /etc/hosts
 EOF
 
+# Both k3s (coredns) and rke2 (rke2-coredns-rke2-coredns) label the deployment k8s-app=kube-dns.
+# Resolve its name in the wait loop: `kubectl get -l ...` exits 0 on an empty result, so testing
+# for a non-empty name is the only way to actually wait for CoreDNS to appear.
 echo "Waiting for CoreDNS deployment to be created..."
+COREDNS_DEPLOYMENT=""
 for _i in {1..30}; do
-  if kubectl -n kube-system get deployment coredns >/dev/null 2>&1 ||
-    kubectl -n kube-system get deployment rke2-coredns-rke2-coredns >/dev/null 2>&1 ||
-    kubectl -n kube-system get deployment -l k8s-app=kube-dns >/dev/null 2>&1; then
-    break
-  fi
+  COREDNS_DEPLOYMENT=$(kubectl -n kube-system get deployment -l k8s-app=kube-dns -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  [ -n "$COREDNS_DEPLOYMENT" ] && break
   echo -n "."
   sleep 2
 done
 echo ""
 
 echo "Restarting CoreDNS to apply the new configuration..."
-# Detect CoreDNS deployment name
-if kubectl -n kube-system get deployment coredns >/dev/null 2>&1; then
-  COREDNS_DEPLOYMENT="coredns"
-elif kubectl -n kube-system get deployment rke2-coredns-rke2-coredns >/dev/null 2>&1; then
-  COREDNS_DEPLOYMENT="rke2-coredns-rke2-coredns"
-else
-  COREDNS_DEPLOYMENT=$(kubectl -n kube-system get deployment -l k8s-app=kube-dns -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-fi
 
 if [ -n "$COREDNS_DEPLOYMENT" ]; then
   kubectl -n kube-system rollout restart deployment $COREDNS_DEPLOYMENT
@@ -680,7 +673,10 @@ LOCAL_TAG="nvidia/${DOCA_IMAGE}:${FULL_TAG}"
 REGISTRY_TARGET="${REGISTRY_IP}:5000/nvidia/${DOCA_IMAGE}:${FULL_TAG}"
 
 echo "Building precompiled DOCA driver container: $LOCAL_TAG"
+# --network=host: podman's default (netavark/pasta) netns cannot resolve DNS on this host, so
+# `go mod download` fails with "lookup proxy.golang.org: i/o timeout". Same as the GPU driver build.
 podman build \
+  --network=host \
   --target precompiled \
   --build-arg D_KERNEL_VER="$KVER" \
   --build-arg D_ARCH="$BUILD_ARCH" \

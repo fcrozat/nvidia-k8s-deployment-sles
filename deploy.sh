@@ -13,12 +13,47 @@ else
   exit 1
 fi
 
+usage() {
+  { set +x; } 2>/dev/null
+  cat <<EOF
+Usage: ./deploy.sh [TARGET_OS] [OPTIONS]
+
+Deploys a Kubernetes cluster (k3s or rke2) and the NVIDIA GPU Operator on a
+SLES host defined in config.sh.
+
+TARGET_OS        Name of a target defined in config.sh (HOST_<NAME>).
+                 Available: $(compgen -v HOST_ | sed 's/^HOST_//' | tr '\n' ' ')
+                 Defaults to DEFAULT_TARGET from config.sh.
+                 Can also be set with the TARGET_OS environment variable.
+
+OPTIONS
+  --k3s-only                 Install the k3s cluster only (no GPU Operator).
+  --rke2-only                Install the rke2 cluster only (no GPU Operator).
+  --network-operator         Also deploy the NVIDIA Network Operator.
+  --network-operator-only    Deploy only the Network Operator, skip GPU Operator.
+  --build-doca-driver        Build/push the precompiled DOCA-OFED driver container.
+  -h, --help                 Show this help and exit.
+
+Environment overrides (see README.md for the full list):
+  TARGET_HOST, TARGET_USER, K8S_DISTRO, NEEDS_MIRROR, USE_PREBUILT_CONTAINER,
+  USE_PRECOMPILED, GPU_OPERATOR_VERSION, NIC_CLUSTER_POLICY_FILE, DEPLOY_LOG
+
+Examples:
+  ./deploy.sh 16.1
+  TARGET_OS=vera72 ./deploy.sh --network-operator --build-doca-driver
+EOF
+}
+
 # Parse arguments
 K3S_ONLY=false
 RKE2_ONLY=false
 NETWORK_OPERATOR_ONLY=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
   --k3s-only)
     K3S_ONLY=true
     shift
@@ -39,6 +74,11 @@ while [[ $# -gt 0 ]]; do
   --build-doca-driver)
     BUILD_DOCA_DRIVER=true
     shift
+    ;;
+  -*)
+    echo "Unknown option: $1"
+    usage
+    exit 1
     ;;
   *)
     TARGET_OS="$1"

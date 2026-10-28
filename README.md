@@ -97,6 +97,7 @@ cp config.sh.example config.sh
 
 ```bash
 chmod +x deploy.sh
+./deploy.sh --help    # list configured targets and options
 ./deploy.sh
 ```
 
